@@ -159,6 +159,83 @@ public class SettingsService
         var json = JsonSerializer.Serialize(messages, JsonOptions);
         Preferences.Set(BurstMessagesKey, json);
     }
+
+    // ── Randomized Normal Messages ──
+
+    private const string RandomizeNormalMessagesKey = "randomize_normal_messages";
+
+    /// <summary>
+    /// 50 built-in short streak messages (4 words max) for randomized normal-mode sends.
+    /// </summary>
+    public static readonly List<string> BuiltInStreakMessages = new()
+    {
+        "Streak",
+        "streak",
+        "streakk",
+        "streaak",
+        "streaakkk",
+        "streaaak",
+        "strk",
+        "Strk",
+        "s",
+        "S",
+        "streaks",
+        "Streaks",
+        "streakss",
+        "streak lol",
+        "yo streak",
+        "yoo streak",
+        "yoo streakk",
+        "hey streak",
+        "hii streak",
+        "hi streak",
+        "heyy streak",
+        "streak hii",
+        "streak hi",
+        "streak yo",
+        "streak yoo",
+        "streakkk",
+        "strek",
+        "streek",
+        "streeek",
+        "streeeek",
+        "yo",
+        "yoo",
+        "yooo",
+        "hey",
+        "hii",
+        "heyy",
+        "heyyy",
+        "here",
+        "heree",
+        "strkeee",
+        "streak rn",
+        "quick streak",
+        "streakk lol",
+        "streak lmao",
+        "lol streak",
+        "streaaakk",
+        "streakkk lol",
+        "daily streak",
+        "streak streak",
+        "ayo streak"
+    };
+
+    /// <summary>
+    /// Get whether randomized built-in messages are enabled for normal mode
+    /// </summary>
+    public bool GetRandomizeNormalMessages()
+    {
+        return Preferences.Get(RandomizeNormalMessagesKey, false);
+    }
+
+    /// <summary>
+    /// Set whether randomized built-in messages are enabled for normal mode
+    /// </summary>
+    public void SetRandomizeNormalMessages(bool enabled)
+    {
+        Preferences.Set(RandomizeNormalMessagesKey, enabled);
+    }
     
     /// <summary>
     /// Get if Burst Mode is currently active

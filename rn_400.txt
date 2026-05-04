@@ -1,0 +1,24 @@
+## What's new in this release (v4.0.0)
+
+### Feature Enhancements & Core Fixes
+
+This release introduces native message randomization for standard automation, improving conversational authenticity while maintaining core reliability:
+
+- **Message Randomization**: Implemented a built-in pool of 50 conversational variations for normal mode execution. The system dynamically assigns a unique phrasing to each recipient per sequence, ensuring varied and natural interaction patterns without requiring manual configuration.
+- **Fisher-Yates Allocation**: Engineered an efficient, upfront list shuffling mechanism during automation startup to guarantee zero consecutive message repetitions across large recipient batches.
+- **State Management**: Added dedicated user interface controls within the profile settings to independently manage normal mode message randomization, cleanly separating standard automation behavior from burst configurations.
+
+---
+
+### Important Upgrade Notice (Pre-v1.7.0 Users)
+If you are upgrading from an older build (prior to v1.7.0), please uninstall the existing application before installing this release. We migrated to a permanent production keystore in v1.7.0 to guarantee seamless, in-place updates for all future versions, which creates a one-time signature conflict with legacy installs.
+
+---
+
+### Installation
+1. Download `Feener-v4.0.0.apk` below
+2. Enable **Install from unknown sources** on your Android device
+3. Install the APK
+
+### Requirements
+- Android 7.0 (API 24) or higher

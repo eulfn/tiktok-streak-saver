@@ -50,6 +50,10 @@ public class StreakService : Service
     private bool _isHibernating = false;
     private long _hibernationEndTimeMs = 0;
 
+    // ── Randomized Normal Messages state ──
+    private List<string>? _shuffledNormalMessages;
+    private int _normalMessageIndex = 0;
+
     // ── Service lifecycle flags ──
     private bool _isCancelRequested = false;
     private bool _automationStarted = false;
@@ -312,6 +316,15 @@ public class StreakService : Service
                     }
                 }
 
+                // Initialize randomized message pool if enabled
+                if (_settingsService.GetRandomizeNormalMessages())
+                {
+                    _shuffledNormalMessages = new List<string>(SettingsService.BuiltInStreakMessages);
+                    ShuffleList(_shuffledNormalMessages);
+                    _normalMessageIndex = 0;
+                    AppLog("SYSTEM", "-", $"Randomized messages enabled: {_shuffledNormalMessages.Count} variants loaded");
+                }
+
                 AppLog("SYSTEM", "-", $"Starting normal automation: {_friendsToProcess.Count} to process, {_cooldownSkippedCount} skipped (already sent today)");
 
                 if (_friendsToProcess.Count == 0)
@@ -483,7 +496,21 @@ public class StreakService : Service
         }
         else
         {
-            message = _settingsService?.GetMessageText() ?? SettingsService.DefaultMessage;
+            if (_shuffledNormalMessages != null && _shuffledNormalMessages.Count > 0)
+            {
+                message = _shuffledNormalMessages[_normalMessageIndex % _shuffledNormalMessages.Count];
+                _normalMessageIndex++;
+                // Reshuffle when pool is exhausted to avoid repeating the same sequence
+                if (_normalMessageIndex >= _shuffledNormalMessages.Count)
+                {
+                    ShuffleList(_shuffledNormalMessages);
+                    _normalMessageIndex = 0;
+                }
+            }
+            else
+            {
+                message = _settingsService?.GetMessageText() ?? SettingsService.DefaultMessage;
+            }
             UpdateNotification($"{_currentFriendIndex + 1}/{_friendsToProcess.Count} \u2014 Processing: @{friend.Username}", _currentFriendIndex, _friendsToProcess.Count);
         }
 
@@ -502,6 +529,18 @@ public class StreakService : Service
         var automationScript = this._baseScript.Replace("[UserName]", escapedUsername);
         automationScript = automationScript.Replace("[Message]", escapedMessage);
         return automationScript;
+    }
+
+    /// <summary>
+    /// Fisher-Yates shuffle for in-place randomization of a list.
+    /// </summary>
+    private void ShuffleList<T>(List<T> list)
+    {
+        for (int i = list.Count - 1; i > 0; i--)
+        {
+            int j = _rng.Next(i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
+        }
     }
 
     internal void OnMessageResult(string username, bool success, string error)

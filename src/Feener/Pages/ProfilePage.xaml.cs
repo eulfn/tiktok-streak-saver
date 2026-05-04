@@ -40,6 +40,7 @@ public partial class ProfilePage : ContentPage
         // Load settings
         ScheduleSwitch.IsToggled = _settingsService.IsScheduled();
         SkipUnreachableSwitch.IsToggled = _settingsService.GetSkipUnreachableUsers();
+        RandomizeMessagesSwitch.IsToggled = _settingsService.GetRandomizeNormalMessages();
 
         // Load version
         VersionLabel.Text = $"v{AppInfo.Current.VersionString}";
@@ -161,6 +162,11 @@ public partial class ProfilePage : ContentPage
     private void OnSkipUnreachableToggled(object? sender, ToggledEventArgs e)
     {
         _settingsService.SetSkipUnreachableUsers(e.Value);
+    }
+
+    private void OnRandomizeMessagesToggled(object? sender, ToggledEventArgs e)
+    {
+        _settingsService.SetRandomizeNormalMessages(e.Value);
     }
 
     private async void OnAboutClicked(object? sender, EventArgs e)
