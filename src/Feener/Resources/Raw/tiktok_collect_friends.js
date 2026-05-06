@@ -1,7 +1,13 @@
-// TikTok Friend Collection Script (Fast Mode)
-// Instead of clicking each chat item one-by-one (slow: 1.5s per click),
-// this scans the chat list DOM directly to extract usernames and display
-// names from the visible items, then scrolls for more. No clicking needed.
+// TikTok Friend Collection Script
+// Runs inside a native Android WebView via CollectFriendsService.
+//
+// Strategy (validated against live DOM):
+// - Chat list items (dm-new-conversation-item) contain NO links.
+//   Usernames are only available by clicking each item and reading
+//   the header's a[href*="/@"] link.
+// - Display names ARE visible in the list item text before clicking.
+// - Optimal click delay: 1.2s (measured 780-1050ms header load time).
+// - Group chats have no profile link — timeout and skip after 2s.
 //
 // Bridge: StreakApp.onFriendFound(username, displayName)
 //         StreakApp.onCollectComplete(total)
@@ -12,9 +18,10 @@
     'use strict';
 
     var collected = {};
+    var chatItems = [];
+    var chatIndex = 0;
     var maxScrollAttempts = 15;
     var scrollAttempts = 0;
-    var lastItemCount = 0;
 
     var log = function (msg) {
         if (typeof StreakApp == 'undefined') {
@@ -24,28 +31,33 @@
         StreakApp.log('[COLLECT] ' + msg);
     };
 
-    // ── Selectors (from tiktok_automation.js) ───────────────────────────────
+    // ── Selectors (from tiktok_automation.js, proven working) ───────────────
 
     var findChatItems = function () {
-        var items = document.querySelectorAll("[data-e2e*='chat-list-item']");
-        if (items.length > 0) return items;
+        var items = document.querySelectorAll("[data-e2e*='dm-new-conversation-item']");
+        if (items.length > 0) {
+            log('Found ' + items.length + ' items via dm-new-conversation-item');
+            return items;
+        }
         var fallbacks = [
-            "[data-e2e*='dm-new-conversation-item']",
+            "[data-e2e*='chat-list-item']",
             "[data-e2e*='chat-item']"
         ];
         for (var i = 0; i < fallbacks.length; i++) {
             try {
                 items = document.querySelectorAll(fallbacks[i]);
-                if (items.length > 0) return items;
+                if (items.length > 0) {
+                    log('Found ' + items.length + ' items via fallback: ' + fallbacks[i]);
+                    return items;
+                }
             } catch (e) { }
         }
-        return document.querySelectorAll("[data-e2e*='chat-list-item']");
+        return document.querySelectorAll("[data-e2e*='dm-new-conversation-item']");
     };
 
     var findChatListContainer = function () {
-        var items = findChatItems();
-        if (items.length > 0) {
-            var parent = items[0].parentElement;
+        if (chatItems.length > 0) {
+            var parent = chatItems[0].parentElement;
             while (parent && parent !== document.body) {
                 if (parent.scrollHeight > parent.clientHeight + 10) {
                     return parent;
@@ -62,74 +74,68 @@
         return null;
     };
 
-    var dumpPageDiagnostics = function () {
-        log('=== PAGE DIAGNOSTICS ===');
-        log('URL: ' + window.location.href);
-        log('Title: ' + document.title);
-        var allE2e = document.querySelectorAll('[data-e2e]');
-        var uniqueVals = {};
-        for (var i = 0; i < allE2e.length; i++) {
-            var val = allE2e[i].getAttribute('data-e2e');
-            if (val) uniqueVals[val] = true;
+    // ── Extract display name from the chat item (before clicking) ───────────
+
+    var extractDisplayName = function (item) {
+        // The display name is the first prominent text in the item.
+        // It's NOT inside any link (items have zero links).
+        var textNodes = item.querySelectorAll('p, span');
+        for (var i = 0; i < textNodes.length; i++) {
+            var t = (textNodes[i].textContent || '').trim();
+            // Skip empty, timestamps (e.g., "08:42"), message previews
+            if (t.length > 0 && t.length < 50 &&
+                !t.match(/^\d{1,2}:\d{2}/) &&
+                !t.match(/^(yesterday|today|just now|\d+[smhd]\s*ago)/i) &&
+                !t.match(/^(shared|you shared|streak|sent|video|photo)/i)) {
+                return t;
+            }
         }
-        var keys = Object.keys(uniqueVals);
-        log('Total data-e2e: ' + allE2e.length + ', Unique: ' + keys.length);
-        log('Attributes: ' + keys.join(', '));
-        log('=== END DIAGNOSTICS ===');
+        // Fallback: first line of all text
+        var all = (item.textContent || '').trim();
+        var first = all.split(/[\n\r]/)[0].trim();
+        return first.substring(0, 40);
     };
 
-    // ── Fast extraction: scan DOM directly, no clicking ─────────────────────
+    // ── Extract username from the chat header (after clicking) ──────────────
 
-    var extractFromItem = function (item) {
-        // 1. Find the profile link (/@username) within this chat list item
-        var link = item.querySelector('a[href*="/@"]');
-        if (!link) return null;
+    var findCurrentChatUsername = function () {
+        // After clicking a chat item, the header area contains a[href*="/@username"]
+        // Verified selectors from live DOM inspection:
+        var chatHeader = document.querySelector('[class*="ChatHeader"]') ||
+                         document.querySelector('[class*="chatHeader"]') ||
+                         document.querySelector('[class*="DivChatHeader"]');
 
-        var href = link.getAttribute('href') || '';
-        var match = href.match(/\/@([^\/\?]+)/);
-        if (!match || !match[1]) return null;
-
-        var username = match[1].trim();
-
-        // 2. Extract display name from the item
-        //    The display name is usually the most prominent text near the profile link.
-        //    Strategy: look for the link text itself, or a nearby styled span/p.
-        var displayName = '';
-
-        // Try the link's own text content first (often is the display name)
-        var linkText = (link.textContent || '').trim();
-        if (linkText && linkText.length > 0 && linkText.indexOf('@') !== 0) {
-            displayName = linkText;
-        }
-
-        // If link text is empty or is the @username, search for name-like elements
-        if (!displayName || displayName.toLowerCase() === username.toLowerCase()) {
-            // Look for elements that commonly hold the display name
-            var nameSelectors = [
-                '[class*="Name"]', '[class*="name"]',
-                '[class*="Nickname"]', '[class*="nickname"]',
-                'p', 'span'
-            ];
-            for (var i = 0; i < nameSelectors.length; i++) {
-                var els = item.querySelectorAll(nameSelectors[i]);
-                for (var j = 0; j < els.length; j++) {
-                    var text = (els[j].textContent || '').trim();
-                    // Skip if empty, is a timestamp, is a message preview, or is @username
-                    if (text.length > 0 && text.length < 50 &&
-                        text.indexOf('@') !== 0 &&
-                        !text.match(/^\d/) &&
-                        !text.match(/^(yesterday|today|just now|\d+[smhd])/i) &&
-                        text.toLowerCase() !== username.toLowerCase()) {
-                        displayName = text;
-                        break;
-                    }
-                }
-                if (displayName) break;
+        if (chatHeader) {
+            var headerLink = chatHeader.querySelector('a[href*="/@"]');
+            if (headerLink) {
+                var href = headerLink.getAttribute('href') || '';
+                var match = href.match(/\/@([^\/\?]+)/);
+                return match ? match[1] : '';
             }
         }
 
-        return { username: username, displayName: displayName || '' };
+        // Fallback: find /@username links in dm-new-chatbox or unparented areas
+        var links = document.querySelectorAll('a[href*="/@"]');
+        for (var i = 0; i < links.length; i++) {
+            var link = links[i];
+            var parent = link.closest('[data-e2e]');
+            var parentAttr = parent ? parent.getAttribute('data-e2e') : '';
+
+            // Accept links from chat header areas only, skip inbox items
+            if (!parentAttr || parentAttr === 'chat-header' ||
+                parentAttr === 'dm-new-chatbox') {
+                var href = link.getAttribute('href') || '';
+                var match = href.match(/\/@([^\/\?]+)/);
+                if (match && match[1]) {
+                    return match[1];
+                }
+            }
+        }
+
+        return '';
     };
+
+    // ── Collection logic ────────────────────────────────────────────────────
 
     var addFriend = function (username, displayName) {
         if (!username) return false;
@@ -143,66 +149,94 @@
         return true;
     };
 
-    // ── Main collection loop: scan visible items, then scroll ───────────────
+    // ── Click-per-item collection (the only working approach) ───────────────
 
-    var scanVisibleItems = function () {
-        var items = findChatItems();
-        log('Scanning ' + items.length + ' chat items...');
-
-        var newFound = 0;
-        for (var i = 0; i < items.length; i++) {
-            var result = extractFromItem(items[i]);
-            if (result && addFriend(result.username, result.displayName)) {
-                newFound++;
-            }
+    var collectNextChat = function () {
+        if (chatIndex >= chatItems.length) {
+            log('Processed all ' + chatItems.length + ' visible items. Trying scroll...');
+            scrollAndCollectMore();
+            return;
         }
 
-        log('Scan complete: ' + newFound + ' new, ' + Object.keys(collected).length + ' total');
-        lastItemCount = items.length;
+        var chatItem = chatItems[chatIndex];
 
-        // Try scrolling for more
-        scrollForMore();
+        // 1. Extract display name BEFORE clicking (it's in the item text)
+        var displayName = extractDisplayName(chatItem);
+
+        log('Clicking chat item ' + (chatIndex + 1) + '/' + chatItems.length + ' (' + displayName + ')');
+
+        // 2. Remember current header username to detect change
+        var prevUsername = findCurrentChatUsername();
+
+        // 3. Click the chat item
+        chatItem.click();
+
+        // 4. Poll for header username to appear (faster than fixed delay)
+        var pollCount = 0;
+        var maxPolls = 20; // 20 * 100ms = 2s timeout for group chats
+        var pollInterval = 100;
+
+        var poll = function () {
+            pollCount++;
+            var username = findCurrentChatUsername();
+
+            if (username && username !== prevUsername) {
+                // Header loaded with new username
+                addFriend(username, displayName);
+                chatIndex++;
+                // Short delay between items to avoid rate limiting
+                setTimeout(collectNextChat, 300);
+            } else if (pollCount < maxPolls) {
+                setTimeout(poll, pollInterval);
+            } else {
+                // Timeout — likely a group chat or special item
+                log('Timeout reading header for item ' + (chatIndex + 1) + ' (' + displayName + ') — skipping (likely group chat)');
+                chatIndex++;
+                setTimeout(collectNextChat, 300);
+            }
+        };
+
+        // Start polling after 200ms (minimum header load time)
+        setTimeout(poll, 200);
     };
 
-    var scrollForMore = function () {
+    var scrollAndCollectMore = function () {
         scrollAttempts++;
         if (scrollAttempts > maxScrollAttempts) {
-            log('Max scroll attempts reached');
+            log('Max scroll attempts reached (' + maxScrollAttempts + ')');
             reportDone();
             return;
         }
 
         var container = findChatListContainer();
         if (!container) {
-            log('No scrollable container found');
+            log('No scrollable chat container found');
             reportDone();
             return;
         }
 
+        var prevCount = chatItems.length;
         var prevScrollTop = container.scrollTop;
         container.scrollTop = container.scrollHeight;
 
-        log('Scrolling (attempt ' + scrollAttempts + '/' + maxScrollAttempts + ')...');
+        log('Scrolling chat list (attempt ' + scrollAttempts + '/' + maxScrollAttempts + ')...');
 
         setTimeout(function () {
-            var items = findChatItems();
-            log('After scroll: ' + items.length + ' items (was ' + lastItemCount + ')');
+            chatItems = findChatItems();
+            log('After scroll: ' + chatItems.length + ' items (was ' + prevCount + ')');
 
-            if (items.length > lastItemCount) {
-                // New items loaded — scan them
-                scanVisibleItems();
+            if (chatItems.length > prevCount) {
+                collectNextChat();
             } else if (container.scrollTop > prevScrollTop) {
-                // Scroll moved but no new items yet — wait a bit
                 setTimeout(function () {
-                    var items2 = findChatItems();
-                    if (items2.length > lastItemCount) {
-                        scanVisibleItems();
+                    chatItems = findChatItems();
+                    if (chatItems.length > prevCount) {
+                        collectNextChat();
                     } else {
-                        scrollForMore();
+                        scrollAndCollectMore();
                     }
                 }, 1500);
             } else {
-                // Scroll didn't move — end of list
                 log('Scroll position unchanged — end of list');
                 reportDone();
             }
@@ -224,11 +258,25 @@
         }
     };
 
+    var dumpPageDiagnostics = function () {
+        log('=== PAGE DIAGNOSTICS ===');
+        log('URL: ' + window.location.href);
+        log('Title: ' + document.title);
+        var allE2e = document.querySelectorAll('[data-e2e]');
+        var uniqueVals = {};
+        for (var i = 0; i < allE2e.length; i++) {
+            var val = allE2e[i].getAttribute('data-e2e');
+            if (val) uniqueVals[val] = true;
+        }
+        log('data-e2e attributes: ' + Object.keys(uniqueVals).join(', '));
+        log('=== END DIAGNOSTICS ===');
+    };
+
     // ── Entry point ─────────────────────────────────────────────────────────
 
     var init = function () {
         try {
-            log('Starting fast friend collection...');
+            log('Starting friend collection...');
             log('URL: ' + window.location.href);
 
             if (window.location.href.toLowerCase().indexOf('/login') !== -1) {
@@ -238,25 +286,25 @@
 
             // Wait for SPA to render
             setTimeout(function () {
-                var items = findChatItems();
-                log('Initial scan: ' + items.length + ' chat items');
+                chatItems = findChatItems();
+                log('Initial: ' + chatItems.length + ' chat items');
 
-                if (items.length === 0) {
+                if (chatItems.length === 0) {
                     dumpPageDiagnostics();
                     log('Retrying in 5 seconds...');
                     setTimeout(function () {
-                        items = findChatItems();
-                        if (items.length === 0) {
+                        chatItems = findChatItems();
+                        if (chatItems.length === 0) {
                             dumpPageDiagnostics();
                             reportError('No chat items found. Make sure you have DM conversations.');
                             return;
                         }
-                        scanVisibleItems();
+                        collectNextChat();
                     }, 5000);
                     return;
                 }
 
-                scanVisibleItems();
+                collectNextChat();
             }, 3000);
 
         } catch (e) {
