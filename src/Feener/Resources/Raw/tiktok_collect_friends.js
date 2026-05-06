@@ -1,77 +1,36 @@
 // TikTok Friend Collection Script
-// Mirrors the proven approach from tiktok_automation.js:
-//   click each chat item → wait → read username from chat header
-// Communicates state via window.__feenerState, polled by C#.
+// Runs inside a native Android WebView via CollectFriendsService.
+// Communicates results via the StreakApp bridge (same as tiktok_automation.js):
+//   StreakApp.onFriendFound(username)   — called for each discovered friend
+//   StreakApp.onCollectComplete(total)  — called when collection is done
+//   StreakApp.onCollectError(error)     — called on fatal error
+//   StreakApp.log(msg)                  — console logging to Android
 
 (function () {
     'use strict';
 
-    window.__feenerState = {
-        status: 'initializing',
-        count: 0,
-        friends: [],
-        error: null
-    };
-
-    var collected = {};     // lowercase username → { username, displayName }
+    var collected = {};
     var chatItems = [];
     var chatIndex = 0;
     var maxScrollAttempts = 15;
     var scrollAttempts = 0;
 
-    // ── Logging (console only, no StreakApp bridge here) ─────────────────────
-
     var log = function (msg) {
-        console.log('[Feener Collect] ' + msg);
-    };
-
-    // ── State reporting ─────────────────────────────────────────────────────
-
-    var updateState = function (status) {
-        var list = [];
-        var keys = Object.keys(collected);
-        for (var i = 0; i < keys.length; i++) {
-            list.push(collected[keys[i]]);
+        if (typeof StreakApp == 'undefined') {
+            console.log('[Feener Collect] ' + msg);
+            return;
         }
-        window.__feenerState = {
-            status: status,
-            count: list.length,
-            friends: list,
-            error: null
-        };
-    };
-
-    var reportError = function (msg) {
-        log('ERROR: ' + msg);
-        var list = [];
-        var keys = Object.keys(collected);
-        for (var i = 0; i < keys.length; i++) {
-            list.push(collected[keys[i]]);
-        }
-        window.__feenerState = {
-            status: 'error',
-            count: list.length,
-            friends: list,
-            error: msg
-        };
-    };
-
-    var reportDone = function () {
-        updateState('done');
-        log('Collection complete. Found ' + window.__feenerState.count + ' unique friends.');
+        StreakApp.log('[COLLECT] ' + msg);
     };
 
     // ── Copied from tiktok_automation.js (proven, battle-tested) ────────────
 
     var findChatItems = function () {
-        // Primary selector (v1.8.0 original)
         var items = document.querySelectorAll("[data-e2e*='chat-list-item']");
         if (items.length > 0) {
             log('Found ' + items.length + ' items via primary: chat-list-item');
             return items;
         }
-
-        // Fallback selectors — TikTok periodically renames data-e2e values
         var fallbacks = [
             "[data-e2e*='dm-new-conversation-item']",
             "[data-e2e*='chat-item']"
@@ -85,8 +44,6 @@
                 }
             } catch (e) { }
         }
-
-        // Nothing found
         return document.querySelectorAll("[data-e2e*='chat-list-item']");
     };
 
@@ -110,7 +67,6 @@
     };
 
     var findCurrentChatUsername = function () {
-        // Find the username from the chat header (the opened conversation)
         var chatHeader = document.querySelector('[class*="ChatHeader"]') ||
                          document.querySelector('[class*="chatHeader"]') ||
                          document.querySelector('[class*="DivChatHeader"]');
@@ -124,14 +80,11 @@
             }
         }
 
-        // Fallback: look for links with no data-e2e parent (usually header area)
         var links = document.querySelectorAll('[class*="StyledLink"]');
         for (var i = 0; i < links.length; i++) {
             var link = links[i];
             var parent = link.closest('[data-e2e]');
             var parentAttr = parent ? parent.getAttribute('data-e2e') : '';
-
-            // Skip inbox items, only look at header/none area
             if (!parentAttr || parentAttr === 'chat-header') {
                 var href = link.getAttribute('href') || '';
                 var match = href.match(/\/@([^\/]+)/);
@@ -148,7 +101,6 @@
         log('=== PAGE DIAGNOSTICS ===');
         log('URL: ' + window.location.href);
         log('Title: ' + document.title);
-
         var allE2e = document.querySelectorAll('[data-e2e]');
         var uniqueVals = {};
         for (var i = 0; i < allE2e.length; i++) {
@@ -156,17 +108,15 @@
             if (val) uniqueVals[val] = true;
         }
         var keys = Object.keys(uniqueVals);
-        log('Total data-e2e elements: ' + allE2e.length + ', Unique attributes: ' + keys.length);
-
+        log('Total data-e2e elements: ' + allE2e.length + ', Unique: ' + keys.length);
         var chunk = [];
         for (var j = 0; j < keys.length; j++) {
             chunk.push(keys[j]);
             if (chunk.length >= 15 || j === keys.length - 1) {
-                log('data-e2e snippet: ' + chunk.join(', '));
+                log('data-e2e: ' + chunk.join(', '));
                 chunk = [];
             }
         }
-
         log('=== END DIAGNOSTICS ===');
     };
 
@@ -176,16 +126,17 @@
         if (!username) return false;
         var key = username.toLowerCase().trim();
         if (key.length < 1 || collected[key]) return false;
-        collected[key] = { username: username.trim(), displayName: '' };
+        collected[key] = username.trim();
         log('Collected: @' + username + ' (' + Object.keys(collected).length + ' total)');
+        // Report each found friend back to the service immediately
+        if (typeof StreakApp !== 'undefined') {
+            StreakApp.onFriendFound(username.trim());
+        }
         return true;
     };
 
-    // Click each chat item, wait, read the username from the header.
-    // This mirrors checkNextChat() from tiktok_automation.js exactly.
     var collectNextChat = function () {
         if (chatIndex >= chatItems.length) {
-            // All visible items processed — try scrolling for more
             log('Processed all ' + chatItems.length + ' visible items. Trying scroll...');
             scrollAndCollectMore();
             return;
@@ -194,9 +145,7 @@
         var chatItem = chatItems[chatIndex];
         log('Clicking chat item ' + (chatIndex + 1) + '/' + chatItems.length);
         chatItem.click();
-        updateState('collecting');
 
-        // Same 1500ms wait as tiktok_automation.js
         setTimeout(function () {
             var username = findCurrentChatUsername();
             if (username) {
@@ -204,15 +153,11 @@
             } else {
                 log('Could not read username from chat header for item ' + (chatIndex + 1));
             }
-
-            updateState('collecting');
             chatIndex++;
             collectNextChat();
         }, 1500);
     };
 
-    // Scroll the chat list to load more items, then continue collecting.
-    // Mirrors scrollAndRetry() from tiktok_automation.js.
     var scrollAndCollectMore = function () {
         scrollAttempts++;
         if (scrollAttempts > maxScrollAttempts) {
@@ -223,7 +168,7 @@
 
         var container = findChatListContainer();
         if (!container) {
-            log('No scrollable chat container found — done');
+            log('No scrollable chat container found');
             reportDone();
             return;
         }
@@ -231,7 +176,6 @@
         var prevCount = chatItems.length;
         var prevScrollTop = container.scrollTop;
         container.scrollTop = container.scrollHeight;
-        updateState('scrolling');
 
         log('Scrolling chat list (attempt ' + scrollAttempts + '/' + maxScrollAttempts + ')...');
 
@@ -240,11 +184,8 @@
             log('After scroll: ' + chatItems.length + ' items (was ' + prevCount + ')');
 
             if (chatItems.length > prevCount) {
-                // New items loaded — continue from where we left off
-                // chatIndex already points to the first unprocessed item
                 collectNextChat();
             } else if (container.scrollTop > prevScrollTop) {
-                // Scroll moved but no new items yet — wait a bit more
                 setTimeout(function () {
                     chatItems = findChatItems();
                     if (chatItems.length > prevCount) {
@@ -254,30 +195,25 @@
                     }
                 }, 2000);
             } else {
-                // Scroll didn't move — end of list
                 log('Scroll position unchanged — end of list');
                 reportDone();
             }
         }, 2000);
     };
 
-    // ── Page detection (JS-owned, not reliant on C#) ────────────────────────
-
-    var detectPageState = function () {
-        var url = window.location.href.toLowerCase();
-
-        // Login page detection
-        if (url.indexOf('/login') !== -1) {
-            return 'login';
+    var reportDone = function () {
+        var total = Object.keys(collected).length;
+        log('Collection complete. Found ' + total + ' unique friends.');
+        if (typeof StreakApp !== 'undefined') {
+            StreakApp.onCollectComplete(total);
         }
+    };
 
-        // Check if we're on the messages page
-        if (url.indexOf('/messages') !== -1 || url.indexOf('/message') !== -1) {
-            return 'messages';
+    var reportError = function (msg) {
+        log('ERROR: ' + msg);
+        if (typeof StreakApp !== 'undefined') {
+            StreakApp.onCollectError(msg);
         }
-
-        // Unknown page
-        return 'unknown';
     };
 
     // ── Entry point ─────────────────────────────────────────────────────────
@@ -287,41 +223,32 @@
             log('Starting friend collection...');
             log('Current URL: ' + window.location.href);
 
-            var page = detectPageState();
-
-            if (page === 'login') {
+            var url = window.location.href.toLowerCase();
+            if (url.indexOf('/login') !== -1) {
                 reportError('Not logged in. Please log in to TikTok first.');
                 return;
             }
 
-            if (page === 'unknown') {
-                log('Unknown page, but will still attempt to find chat items...');
-            }
-
-            // Wait 3s for the SPA to render (same as tiktok_automation.js)
             setTimeout(function () {
                 chatItems = findChatItems();
                 log('Found ' + chatItems.length + ' chat items');
 
                 if (chatItems.length === 0) {
                     dumpPageDiagnostics();
-                    // Retry once after 5 more seconds (page might still be loading)
                     log('Retrying in 5 seconds...');
                     setTimeout(function () {
                         chatItems = findChatItems();
                         log('Retry: Found ' + chatItems.length + ' chat items');
                         if (chatItems.length === 0) {
                             dumpPageDiagnostics();
-                            reportError('No chat items found. Make sure you are on the Messages page and have DM conversations.');
+                            reportError('No chat items found. Make sure you have DM conversations.');
                             return;
                         }
-                        updateState('collecting');
                         collectNextChat();
                     }, 5000);
                     return;
                 }
 
-                updateState('collecting');
                 collectNextChat();
             }, 3000);
 
@@ -331,6 +258,5 @@
         }
     };
 
-    // Start
     init();
 })();

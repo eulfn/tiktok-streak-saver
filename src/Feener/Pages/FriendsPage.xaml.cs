@@ -8,24 +8,19 @@ namespace Feener.Pages;
 public partial class FriendsPage : ContentPage
 {
     private readonly SettingsService _settingsService;
-    private readonly SessionService _sessionService;
 
     // ── Streaks mode state ──────────────────────────────────────────────────
     private bool _lastIsRunning = false;
     private IDispatcherTimer? _statusTimer;
 
     // ── Collect mode state ──────────────────────────────────────────────────
-    private bool _isCollecting = false;
-    private bool _collectJsInjected = false;
-    private string? _collectJsSource;
-    private IDispatcherTimer? _collectPollTimer;
-    private List<CollectedFriend> _collectedFriends = new();
+    private bool _lastCollectRunning = false;
+    private List<string> _collectedUsernames = new();
 
     public FriendsPage()
     {
         InitializeComponent();
         _settingsService = new SettingsService();
-        _sessionService = new SessionService();
     }
 
     private Color GetThemeColor(string key, string fallbackHex = "#92979E")
@@ -68,11 +63,11 @@ public partial class FriendsPage : ContentPage
             _statusTimer.Tick -= OnStatusTimerTick;
             _statusTimer = null;
         }
-        StopCollectPolling();
     }
 
     private void OnStatusTimerTick(object? sender, EventArgs e)
     {
+        // ── Streaks mode: track StreakService state ──
         bool isRunning = false;
 #if ANDROID
         isRunning = Feener.Platforms.Android.Services.StreakService.IsRunning;
@@ -93,6 +88,38 @@ public partial class FriendsPage : ContentPage
                 AddFriendPanel.IsVisible = false;
             }
         }
+
+        // ── Collect mode: track CollectFriendsService state ──
+#if ANDROID
+        bool collectRunning = Feener.Platforms.Android.Services.CollectFriendsService.IsRunning;
+        if (collectRunning != _lastCollectRunning)
+        {
+            _lastCollectRunning = collectRunning;
+            UpdateCollectUI();
+        }
+
+        // While collecting, update the results list in real-time
+        if (collectRunning)
+        {
+            var currentUsernames = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedUsernames();
+            if (currentUsernames.Count != _collectedUsernames.Count)
+            {
+                _collectedUsernames = currentUsernames;
+                RebuildCollectedList();
+            }
+            var status = Feener.Platforms.Android.Services.CollectFriendsService.GetStatusMessage();
+            if (status != null) CollectStatusLabel.Text = status;
+        }
+
+        // When done, do a final update
+        if (!collectRunning && Feener.Platforms.Android.Services.CollectFriendsService.IsDone)
+        {
+            _collectedUsernames = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedUsernames();
+            var status = Feener.Platforms.Android.Services.CollectFriendsService.GetStatusMessage();
+            if (status != null) CollectStatusLabel.Text = status;
+            RebuildCollectedList();
+        }
+#endif
     }
 
     private void OnRefreshing(object? sender, EventArgs e)
@@ -133,6 +160,9 @@ public partial class FriendsPage : ContentPage
 
         StreaksTabBorder.BackgroundColor = Colors.Transparent;
         StreaksTabLabel.TextColor = GetThemeColor("Gray400", "#8B8F96");
+
+        // If we already have results from a previous run, show them
+        UpdateCollectUI();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -174,7 +204,6 @@ public partial class FriendsPage : ContentPage
 
         foreach (var friend in displayFriends) FriendsListContainer.Children.Add(CreateFriendView(friend));
 
-        // Update stats card
         UpdateStatsCard(allFriends);
     }
 
@@ -374,14 +403,15 @@ public partial class FriendsPage : ContentPage
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    //  Collect Mode — Background WebView Collection
+    //  Collect Mode — Background Service
     // ═══════════════════════════════════════════════════════════════════════
 
     private async void OnCollectClicked(object? sender, EventArgs e)
     {
-        if (_isCollecting) return;
+#if ANDROID
+        if (Feener.Platforms.Android.Services.CollectFriendsService.IsRunning)
+            return;
 
-        // Session check
         bool hasSession = TikTokWebViewHelper.HasValidSessionCookie();
         if (!hasSession)
         {
@@ -390,153 +420,53 @@ public partial class FriendsPage : ContentPage
             return;
         }
 
-        // Load JS if needed
-        if (string.IsNullOrEmpty(_collectJsSource))
-        {
-            try
-            {
-                using var stream = await FileSystem.OpenAppPackageFileAsync("tiktok_collect_friends.js");
-                using var reader = new StreamReader(stream);
-                _collectJsSource = await reader.ReadToEndAsync();
-            }
-            catch
-            {
-                await DisplayAlert("Error", "Could not load collection script.", "OK");
-                return;
-            }
-        }
+        // Start the background service (same pattern as StreakScheduler.RunNow)
+        var context = Platform.CurrentActivity ?? Platform.AppContext;
+        var serviceIntent = new Android.Content.Intent(context,
+            typeof(Feener.Platforms.Android.Services.CollectFriendsService));
 
-        _isCollecting = true;
-        _collectJsInjected = false;
-        _collectedFriends.Clear();
+        if (Android.OS.Build.VERSION.SdkInt >= Android.OS.BuildVersionCodes.O)
+            context.StartForegroundService(serviceIntent);
+        else
+            context.StartService(serviceIntent);
 
-        // Update UI
         CollectButton.IsEnabled = false;
         CollectButton.Text = "Collecting...";
-        CollectStatusLabel.Text = "Loading TikTok messages...";
         CollectSpinner.IsVisible = true;
         CollectSpinner.IsRunning = true;
-        CollectedResultsCard.IsVisible = false;
-
-        // Configure and load the hidden WebView
-        var loginUa = _sessionService.GetLoginUserAgent();
-#if ANDROID
-        TikTokWebViewHelper.ConfigureWebView(CollectWebView, loginUa);
+        CollectStatusLabel.Text = "Loading TikTok messages...";
 #endif
-        CollectWebView.Navigated += OnCollectWebViewNavigated;
-        CollectWebView.Source = TikTokWebViewHelper.MessagesUrl;
     }
 
-    private async void OnCollectWebViewNavigated(object? sender, WebNavigatedEventArgs e)
+    private void UpdateCollectUI()
     {
-        if (_collectJsInjected) return;
-        _collectJsInjected = true;
+#if ANDROID
+        bool running = Feener.Platforms.Android.Services.CollectFriendsService.IsRunning;
+        bool done = Feener.Platforms.Android.Services.CollectFriendsService.IsDone;
 
-        // Detach so we don't fire again
-        CollectWebView.Navigated -= OnCollectWebViewNavigated;
-
-        CollectStatusLabel.Text = "Scanning your DM list...";
-
-        // Inject the collection JS — it handles its own page detection and timing
-        if (!string.IsNullOrEmpty(_collectJsSource))
+        if (running)
         {
-            await CollectWebView.EvaluateJavaScriptAsync(_collectJsSource);
+            CollectButton.IsEnabled = false;
+            CollectButton.Text = "Collecting...";
+            CollectSpinner.IsVisible = true;
+            CollectSpinner.IsRunning = true;
+        }
+        else
+        {
+            CollectButton.IsEnabled = true;
+            CollectButton.Text = done ? "Collect Again" : "Collect";
+            CollectSpinner.IsVisible = false;
+            CollectSpinner.IsRunning = false;
         }
 
-        // Start polling for results
-        StartCollectPolling();
-    }
-
-    private void StartCollectPolling()
-    {
-        if (_collectPollTimer != null) return;
-        _collectPollTimer = Dispatcher.CreateTimer();
-        _collectPollTimer.Interval = TimeSpan.FromMilliseconds(1200);
-        _collectPollTimer.Tick += OnCollectPollTick;
-        _collectPollTimer.Start();
-    }
-
-    private void StopCollectPolling()
-    {
-        if (_collectPollTimer != null)
+        if (done)
         {
-            _collectPollTimer.Stop();
-            _collectPollTimer.Tick -= OnCollectPollTick;
-            _collectPollTimer = null;
+            _collectedUsernames = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedUsernames();
+            var status = Feener.Platforms.Android.Services.CollectFriendsService.GetStatusMessage();
+            if (status != null) CollectStatusLabel.Text = status;
+            RebuildCollectedList();
         }
-    }
-
-    private async void OnCollectPollTick(object? sender, EventArgs e)
-    {
-        if (!_isCollecting) { StopCollectPolling(); return; }
-
-        try
-        {
-            var json = await CollectWebView.EvaluateJavaScriptAsync(
-                "JSON.stringify(window.__feenerState)");
-
-            if (string.IsNullOrEmpty(json)) return;
-
-            json = UnescapeJsString(json);
-
-            var state = System.Text.Json.JsonSerializer.Deserialize<CollectionState>(json,
-                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            if (state == null) return;
-
-            MainThread.BeginInvokeOnMainThread(() =>
-            {
-                if (state.Status == "collecting")
-                    CollectStatusLabel.Text = $"Collecting... {state.Count} found";
-                else if (state.Status == "scrolling")
-                    CollectStatusLabel.Text = $"Scrolling for more... {state.Count} found";
-                else if (state.Status == "initializing")
-                    CollectStatusLabel.Text = "Waiting for page to load...";
-            });
-
-            if (state.Status == "done" || state.Status == "error")
-            {
-                StopCollectPolling();
-                _isCollecting = false;
-
-                MainThread.BeginInvokeOnMainThread(() =>
-                {
-                    _collectedFriends = state.Friends?
-                        .OrderBy(f => f.Username, StringComparer.OrdinalIgnoreCase)
-                        .ToList() ?? new();
-
-                    CollectSpinner.IsRunning = false;
-                    CollectSpinner.IsVisible = false;
-                    CollectButton.IsEnabled = true;
-                    CollectButton.Text = "Collect Again";
-
-                    if (state.Status == "error" && state.Count == 0)
-                    {
-                        CollectStatusLabel.Text = state.Error ?? "Collection failed";
-                    }
-                    else
-                    {
-                        CollectStatusLabel.Text = $"Found {_collectedFriends.Count} friend{(_collectedFriends.Count == 1 ? "" : "s")}";
-                    }
-
-                    RebuildCollectedList();
-                });
-            }
-        }
-        catch { /* polling errors are non-fatal */ }
-    }
-
-    private static string UnescapeJsString(string raw)
-    {
-        if (raw.Length >= 2 && raw[0] == '"' && raw[^1] == '"')
-            raw = raw[1..^1];
-        raw = raw.Replace("\\\"", "\"")
-                 .Replace("\\\\", "\\")
-                 .Replace("\\/", "/")
-                 .Replace("\\n", "\n")
-                 .Replace("\\r", "\r")
-                 .Replace("\\t", "\t");
-        return raw;
+#endif
     }
 
     // ── Collected friends list display ───────────────────────────────────────
@@ -545,7 +475,7 @@ public partial class FriendsPage : ContentPage
     {
         CollectedListContainer.Children.Clear();
 
-        if (_collectedFriends.Count == 0)
+        if (_collectedUsernames.Count == 0)
         {
             CollectedResultsCard.IsVisible = false;
             return;
@@ -554,20 +484,24 @@ public partial class FriendsPage : ContentPage
         CollectedResultsCard.IsVisible = true;
         CollectedEmptyLabel.IsVisible = false;
 
+        var sorted = _collectedUsernames
+            .OrderBy(u => u, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         var existingFriends = _settingsService.GetFriendsList();
         var existingSet = new HashSet<string>(
             existingFriends.Select(f => f.Username.ToLowerInvariant()));
 
-        foreach (var friend in _collectedFriends)
+        foreach (var username in sorted)
         {
-            bool inList = existingSet.Contains(friend.Username.ToLowerInvariant());
-            CollectedListContainer.Children.Add(CreateCollectedItem(friend, inList));
+            bool inList = existingSet.Contains(username.ToLowerInvariant());
+            CollectedListContainer.Children.Add(CreateCollectedItem(username, inList));
         }
 
-        CollectedTotalLabel.Text = $"Total: {_collectedFriends.Count}";
+        CollectedTotalLabel.Text = $"Total: {sorted.Count}";
     }
 
-    private View CreateCollectedItem(CollectedFriend friend, bool inFriendList)
+    private View CreateCollectedItem(string username, bool inFriendList)
     {
         var border = new Border
         {
@@ -591,7 +525,7 @@ public partial class FriendsPage : ContentPage
 
         var label = new Label
         {
-            Text = $"@{friend.Username}",
+            Text = $"@{username}",
             FontSize = 14,
             FontFamily = "InterSemiBold",
             VerticalOptions = LayoutOptions.Center
@@ -613,14 +547,14 @@ public partial class FriendsPage : ContentPage
             actionButton.Text = "Remove";
             actionButton.BackgroundColor = Colors.Transparent;
             actionButton.TextColor = GetThemeColor("DeleteColor", "#EE1D52");
-            actionButton.Clicked += (s, e) => OnRemoveCollected(friend.Username);
+            actionButton.Clicked += (s, e) => OnRemoveCollected(username);
         }
         else
         {
             actionButton.Text = "Add";
             actionButton.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
             actionButton.TextColor = Colors.White;
-            actionButton.Clicked += (s, e) => OnAddCollected(friend.Username);
+            actionButton.Clicked += (s, e) => OnAddCollected(username);
         }
 
         Grid.SetColumn(actionButton, 1);
@@ -660,21 +594,5 @@ public partial class FriendsPage : ContentPage
             LoadFriendsList();
         }
         RebuildCollectedList();
-    }
-
-    // ── DTOs for JS state ───────────────────────────────────────────────────
-
-    private class CollectionState
-    {
-        public string Status { get; set; } = string.Empty;
-        public int Count { get; set; }
-        public List<CollectedFriend>? Friends { get; set; }
-        public string? Error { get; set; }
-    }
-
-    private class CollectedFriend
-    {
-        public string Username { get; set; } = string.Empty;
-        public string? DisplayName { get; set; }
     }
 }

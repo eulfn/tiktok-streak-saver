@@ -254,13 +254,6 @@
             </ScrollView>
         </RefreshView>
 
-        <!-- Hidden WebView for background collection (not visible, but attached to visual tree) -->
-        <WebView x:Name="CollectWebView"
-                 HeightRequest="1" WidthRequest="1"
-                 Opacity="0" InputTransparent="True"
-                 VerticalOptions="Start" HorizontalOptions="Start"
-                 IsVisible="True"/>
-
         <!-- ─── Floating Nav Bar ─── -->
         <views:FloatingNavBar CurrentTab="Friends" VerticalOptions="End"/>
     </Grid>
