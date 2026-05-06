@@ -8,11 +8,24 @@ namespace Feener.Pages;
 public partial class FriendsPage : ContentPage
 {
     private readonly SettingsService _settingsService;
+    private readonly SessionService _sessionService;
+
+    // ── Streaks mode state ──────────────────────────────────────────────────
+    private bool _lastIsRunning = false;
+    private IDispatcherTimer? _statusTimer;
+
+    // ── Collect mode state ──────────────────────────────────────────────────
+    private bool _isCollecting = false;
+    private bool _collectJsInjected = false;
+    private string? _collectJsSource;
+    private IDispatcherTimer? _collectPollTimer;
+    private List<CollectedFriend> _collectedFriends = new();
 
     public FriendsPage()
     {
         InitializeComponent();
         _settingsService = new SettingsService();
+        _sessionService = new SessionService();
     }
 
     private Color GetThemeColor(string key, string fallbackHex = "#92979E")
@@ -22,8 +35,9 @@ public partial class FriendsPage : ContentPage
         return Color.FromArgb(fallbackHex);
     }
 
-    private bool _lastIsRunning = false;
-    private IDispatcherTimer? _statusTimer;
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Lifecycle
+    // ═══════════════════════════════════════════════════════════════════════
 
     protected override async void OnAppearing()
     {
@@ -54,6 +68,7 @@ public partial class FriendsPage : ContentPage
             _statusTimer.Tick -= OnStatusTimerTick;
             _statusTimer = null;
         }
+        StopCollectPolling();
     }
 
     private void OnStatusTimerTick(object? sender, EventArgs e)
@@ -83,8 +98,46 @@ public partial class FriendsPage : ContentPage
     private void OnRefreshing(object? sender, EventArgs e)
     {
         LoadFriendsList();
+        if (CollectModeContainer.IsVisible)
+            RebuildCollectedList();
         MainRefreshView.IsRefreshing = false;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Mode Switcher
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void OnStreaksModeTapped(object? sender, TappedEventArgs e)
+    {
+        StreaksModeContainer.IsVisible = true;
+        CollectModeContainer.IsVisible = false;
+
+        StreaksTabBorder.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
+        StreaksTabLabel.TextColor = Application.Current?.RequestedTheme == AppTheme.Dark
+            ? GetThemeColor("PrimaryDarkText", "#FFFFFF")
+            : Colors.White;
+
+        CollectTabBorder.BackgroundColor = Colors.Transparent;
+        CollectTabLabel.TextColor = GetThemeColor("Gray400", "#8B8F96");
+    }
+
+    private void OnCollectModeTapped(object? sender, TappedEventArgs e)
+    {
+        StreaksModeContainer.IsVisible = false;
+        CollectModeContainer.IsVisible = true;
+
+        CollectTabBorder.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
+        CollectTabLabel.TextColor = Application.Current?.RequestedTheme == AppTheme.Dark
+            ? GetThemeColor("PrimaryDarkText", "#FFFFFF")
+            : Colors.White;
+
+        StreaksTabBorder.BackgroundColor = Colors.Transparent;
+        StreaksTabLabel.TextColor = GetThemeColor("Gray400", "#8B8F96");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Streaks Mode — Friends List (existing logic, unchanged)
+    // ═══════════════════════════════════════════════════════════════════════
 
     private void LoadFriendsList()
     {
@@ -207,11 +260,6 @@ public partial class FriendsPage : ContentPage
         NewFriendUsernameEntry.Focus();
     }
 
-    private async void OnCollectFriendsClicked(object? sender, EventArgs e)
-    {
-        await Navigation.PushAsync(new CollectFriendsPage());
-    }
-
     private void OnCancelAddFriend(object? sender, EventArgs e) => AddFriendPanel.IsVisible = false;
 
     private async void OnSaveFriend(object? sender, EventArgs e)
@@ -323,5 +371,310 @@ public partial class FriendsPage : ContentPage
             await Share.Default.RequestAsync(new ShareFileRequest { Title = "Export Friend List", File = new ShareFile(filePath, "application/json") });
         }
         catch (Exception ex) { await DisplayAlert("Export Failed", $"Could not export: {ex.Message}", "OK"); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Collect Mode — Background WebView Collection
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private async void OnCollectClicked(object? sender, EventArgs e)
+    {
+        if (_isCollecting) return;
+
+        // Session check
+        bool hasSession = TikTokWebViewHelper.HasValidSessionCookie();
+        if (!hasSession)
+        {
+            await DisplayAlert("Not Logged In",
+                "Please log in to TikTok first from the Profile page.", "OK");
+            return;
+        }
+
+        // Load JS if needed
+        if (string.IsNullOrEmpty(_collectJsSource))
+        {
+            try
+            {
+                using var stream = await FileSystem.OpenAppPackageFileAsync("tiktok_collect_friends.js");
+                using var reader = new StreamReader(stream);
+                _collectJsSource = await reader.ReadToEndAsync();
+            }
+            catch
+            {
+                await DisplayAlert("Error", "Could not load collection script.", "OK");
+                return;
+            }
+        }
+
+        _isCollecting = true;
+        _collectJsInjected = false;
+        _collectedFriends.Clear();
+
+        // Update UI
+        CollectButton.IsEnabled = false;
+        CollectButton.Text = "Collecting...";
+        CollectStatusLabel.Text = "Loading TikTok messages...";
+        CollectSpinner.IsVisible = true;
+        CollectSpinner.IsRunning = true;
+        CollectedResultsCard.IsVisible = false;
+
+        // Configure and load the hidden WebView
+        var loginUa = _sessionService.GetLoginUserAgent();
+#if ANDROID
+        TikTokWebViewHelper.ConfigureWebView(CollectWebView, loginUa);
+#endif
+        CollectWebView.Navigated += OnCollectWebViewNavigated;
+        CollectWebView.Source = TikTokWebViewHelper.MessagesUrl;
+    }
+
+    private async void OnCollectWebViewNavigated(object? sender, WebNavigatedEventArgs e)
+    {
+        if (_collectJsInjected) return;
+        _collectJsInjected = true;
+
+        // Detach so we don't fire again
+        CollectWebView.Navigated -= OnCollectWebViewNavigated;
+
+        CollectStatusLabel.Text = "Scanning your DM list...";
+
+        // Inject the collection JS — it handles its own page detection and timing
+        if (!string.IsNullOrEmpty(_collectJsSource))
+        {
+            await CollectWebView.EvaluateJavaScriptAsync(_collectJsSource);
+        }
+
+        // Start polling for results
+        StartCollectPolling();
+    }
+
+    private void StartCollectPolling()
+    {
+        if (_collectPollTimer != null) return;
+        _collectPollTimer = Dispatcher.CreateTimer();
+        _collectPollTimer.Interval = TimeSpan.FromMilliseconds(1200);
+        _collectPollTimer.Tick += OnCollectPollTick;
+        _collectPollTimer.Start();
+    }
+
+    private void StopCollectPolling()
+    {
+        if (_collectPollTimer != null)
+        {
+            _collectPollTimer.Stop();
+            _collectPollTimer.Tick -= OnCollectPollTick;
+            _collectPollTimer = null;
+        }
+    }
+
+    private async void OnCollectPollTick(object? sender, EventArgs e)
+    {
+        if (!_isCollecting) { StopCollectPolling(); return; }
+
+        try
+        {
+            var json = await CollectWebView.EvaluateJavaScriptAsync(
+                "JSON.stringify(window.__feenerState)");
+
+            if (string.IsNullOrEmpty(json)) return;
+
+            json = UnescapeJsString(json);
+
+            var state = System.Text.Json.JsonSerializer.Deserialize<CollectionState>(json,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (state == null) return;
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                if (state.Status == "collecting")
+                    CollectStatusLabel.Text = $"Collecting... {state.Count} found";
+                else if (state.Status == "scrolling")
+                    CollectStatusLabel.Text = $"Scrolling for more... {state.Count} found";
+                else if (state.Status == "initializing")
+                    CollectStatusLabel.Text = "Waiting for page to load...";
+            });
+
+            if (state.Status == "done" || state.Status == "error")
+            {
+                StopCollectPolling();
+                _isCollecting = false;
+
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    _collectedFriends = state.Friends?
+                        .OrderBy(f => f.Username, StringComparer.OrdinalIgnoreCase)
+                        .ToList() ?? new();
+
+                    CollectSpinner.IsRunning = false;
+                    CollectSpinner.IsVisible = false;
+                    CollectButton.IsEnabled = true;
+                    CollectButton.Text = "Collect Again";
+
+                    if (state.Status == "error" && state.Count == 0)
+                    {
+                        CollectStatusLabel.Text = state.Error ?? "Collection failed";
+                    }
+                    else
+                    {
+                        CollectStatusLabel.Text = $"Found {_collectedFriends.Count} friend{(_collectedFriends.Count == 1 ? "" : "s")}";
+                    }
+
+                    RebuildCollectedList();
+                });
+            }
+        }
+        catch { /* polling errors are non-fatal */ }
+    }
+
+    private static string UnescapeJsString(string raw)
+    {
+        if (raw.Length >= 2 && raw[0] == '"' && raw[^1] == '"')
+            raw = raw[1..^1];
+        raw = raw.Replace("\\\"", "\"")
+                 .Replace("\\\\", "\\")
+                 .Replace("\\/", "/")
+                 .Replace("\\n", "\n")
+                 .Replace("\\r", "\r")
+                 .Replace("\\t", "\t");
+        return raw;
+    }
+
+    // ── Collected friends list display ───────────────────────────────────────
+
+    private void RebuildCollectedList()
+    {
+        CollectedListContainer.Children.Clear();
+
+        if (_collectedFriends.Count == 0)
+        {
+            CollectedResultsCard.IsVisible = false;
+            return;
+        }
+
+        CollectedResultsCard.IsVisible = true;
+        CollectedEmptyLabel.IsVisible = false;
+
+        var existingFriends = _settingsService.GetFriendsList();
+        var existingSet = new HashSet<string>(
+            existingFriends.Select(f => f.Username.ToLowerInvariant()));
+
+        foreach (var friend in _collectedFriends)
+        {
+            bool inList = existingSet.Contains(friend.Username.ToLowerInvariant());
+            CollectedListContainer.Children.Add(CreateCollectedItem(friend, inList));
+        }
+
+        CollectedTotalLabel.Text = $"Total: {_collectedFriends.Count}";
+    }
+
+    private View CreateCollectedItem(CollectedFriend friend, bool inFriendList)
+    {
+        var border = new Border
+        {
+            StrokeShape = new RoundRectangle { CornerRadius = 12 },
+            Stroke = Colors.Transparent,
+            Padding = new Thickness(12, 10)
+        };
+        border.SetAppThemeColor(Border.BackgroundColorProperty,
+            GetThemeColor("Gray100", "#F3F4F6"),
+            GetThemeColor("Gray900", "#111827"));
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitionCollection
+            {
+                new ColumnDefinition { Width = GridLength.Star },
+                new ColumnDefinition { Width = GridLength.Auto }
+            },
+            ColumnSpacing = 8
+        };
+
+        var label = new Label
+        {
+            Text = $"@{friend.Username}",
+            FontSize = 14,
+            FontFamily = "InterSemiBold",
+            VerticalOptions = LayoutOptions.Center
+        };
+        grid.Children.Add(label);
+
+        var actionButton = new Button
+        {
+            FontSize = 12,
+            FontFamily = "InterMedium",
+            Padding = new Thickness(12, 0),
+            HeightRequest = 36,
+            CornerRadius = 10,
+            VerticalOptions = LayoutOptions.Center
+        };
+
+        if (inFriendList)
+        {
+            actionButton.Text = "Remove";
+            actionButton.BackgroundColor = Colors.Transparent;
+            actionButton.TextColor = GetThemeColor("DeleteColor", "#EE1D52");
+            actionButton.Clicked += (s, e) => OnRemoveCollected(friend.Username);
+        }
+        else
+        {
+            actionButton.Text = "Add";
+            actionButton.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
+            actionButton.TextColor = Colors.White;
+            actionButton.Clicked += (s, e) => OnAddCollected(friend.Username);
+        }
+
+        Grid.SetColumn(actionButton, 1);
+        grid.Children.Add(actionButton);
+
+        border.Content = grid;
+        return border;
+    }
+
+    private void OnAddCollected(string username)
+    {
+        var existing = _settingsService.GetFriendsList();
+        if (existing.Any(f => f.Username.Equals(username, StringComparison.OrdinalIgnoreCase)))
+        {
+            RebuildCollectedList();
+            return;
+        }
+
+        existing.Add(new FriendConfig
+        {
+            Username = username,
+            DisplayName = string.Empty,
+            IsEnabled = true
+        });
+        _settingsService.SaveFriendsList(existing);
+        LoadFriendsList();
+        RebuildCollectedList();
+    }
+
+    private void OnRemoveCollected(string username)
+    {
+        var existing = _settingsService.GetFriendsList();
+        var match = existing.FirstOrDefault(f => f.Username.Equals(username, StringComparison.OrdinalIgnoreCase));
+        if (match != null)
+        {
+            _settingsService.RemoveFriend(match.Id);
+            LoadFriendsList();
+        }
+        RebuildCollectedList();
+    }
+
+    // ── DTOs for JS state ───────────────────────────────────────────────────
+
+    private class CollectionState
+    {
+        public string Status { get; set; } = string.Empty;
+        public int Count { get; set; }
+        public List<CollectedFriend>? Friends { get; set; }
+        public string? Error { get; set; }
+    }
+
+    private class CollectedFriend
+    {
+        public string Username { get; set; } = string.Empty;
+        public string? DisplayName { get; set; }
     }
 }
