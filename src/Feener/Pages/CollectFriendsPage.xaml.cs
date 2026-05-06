@@ -84,25 +84,19 @@ public partial class CollectFriendsPage : ContentPage
 
     // ── WebView Events ──────────────────────────────────────────────────────
 
-    private async void OnWebViewNavigated(object? sender, WebNavigatedEventArgs e)
+    private void OnWebViewNavigated(object? sender, WebNavigatedEventArgs e)
     {
-        if (_jsInjected || _collectionDone) return;
+        // Don't auto-inject based on URL — we don't know the actual page state.
+        // TikTok is an SPA; the Navigated event fires before the DOM is ready
+        // and URL checks are unreliable.
+        //
+        // Instead: hide the loading overlay and enable the "Start" button.
+        // The JS itself handles all page detection (login redirect, DOM readiness).
+        if (_jsInjected) return;
 
-        // Hide the loading overlay once the page renders
         LoadingOverlay.IsVisible = false;
-
-        // Check if we ended up on a login page instead of messages
-        var url = e.Url ?? string.Empty;
-        if (url.Contains("/login", StringComparison.OrdinalIgnoreCase))
-        {
-            SubtitleLabel.Text = "Session expired — please log in to TikTok first.";
-            ActionButton.Text = "Back";
-            ActionButton.IsEnabled = true;
-            return;
-        }
-
-        // Auto-start collection
-        await StartCollection();
+        ActionButton.Text = "Start Collection";
+        ActionButton.IsEnabled = true;
     }
 
     // ── Collection Logic ────────────────────────────────────────────────────
@@ -113,14 +107,14 @@ public partial class CollectFriendsPage : ContentPage
         _jsInjected = true;
         _phase = PagePhase.Collecting;
 
-        // Show the collecting overlay
+        // Show the collecting overlay (semi-transparent so WebView is still visible)
         CollectingOverlay.IsVisible = true;
         CollectingStatusLabel.Text = "Collecting friends...";
-        CollectingCountLabel.Text = "Scanning your DM list";
+        CollectingCountLabel.Text = "Waiting for TikTok to load";
         ActionButton.Text = "Collecting...";
         ActionButton.IsEnabled = false;
 
-        // Inject the collection JS
+        // Inject the collection JS — it handles its own page detection and timing
         await TikTokWebView.EvaluateJavaScriptAsync(_collectJsSource);
 
         // Start polling for results
@@ -160,7 +154,6 @@ public partial class CollectFriendsPage : ContentPage
             if (string.IsNullOrEmpty(json)) return;
 
             // EvaluateJavaScriptAsync wraps the result in quotes and escapes inner quotes
-            // e.g. "\"{ ... }\"" — we need to unescape
             json = UnescapeJsString(json);
 
             var state = System.Text.Json.JsonSerializer.Deserialize<CollectionState>(json,
@@ -177,6 +170,8 @@ public partial class CollectFriendsPage : ContentPage
                     CollectingStatusLabel.Text = "Scrolling for more...";
                 else if (state.Status == "collecting")
                     CollectingStatusLabel.Text = "Collecting friends...";
+                else if (state.Status == "initializing")
+                    CollectingStatusLabel.Text = "Waiting for page to load...";
             });
 
             // Check terminal states
@@ -189,10 +184,19 @@ public partial class CollectFriendsPage : ContentPage
                 {
                     if (state.Status == "error")
                     {
-                        CollectingStatusLabel.Text = "Collection failed";
-                        CollectingCountLabel.Text = state.Error ?? "Unknown error";
-                        ActionButton.Text = "Back";
-                        ActionButton.IsEnabled = true;
+                        // If we collected some friends before the error, still show results
+                        if (state.Count > 0)
+                        {
+                            ShowResults(state.Friends ?? new List<CollectedFriend>(),
+                                        errorMessage: state.Error);
+                        }
+                        else
+                        {
+                            CollectingStatusLabel.Text = "Collection failed";
+                            CollectingCountLabel.Text = state.Error ?? "Unknown error";
+                            ActionButton.Text = "Back";
+                            ActionButton.IsEnabled = true;
+                        }
                     }
                     else
                     {
@@ -226,7 +230,7 @@ public partial class CollectFriendsPage : ContentPage
 
     // ── Results Display ─────────────────────────────────────────────────────
 
-    private void ShowResults(List<CollectedFriend> friends)
+    private void ShowResults(List<CollectedFriend> friends, string? errorMessage = null)
     {
         _phase = PagePhase.Results;
         _collectedFriends = friends;
@@ -255,6 +259,11 @@ public partial class CollectFriendsPage : ContentPage
         ResultsTotalLabel.Text = total.ToString();
         ResultsNewLabel.Text = _newFriendsCount.ToString();
         ResultsExistingLabel.Text = existing.ToString();
+
+        if (errorMessage != null)
+        {
+            ResultsTitleLabel.Text = "Partial Results";
+        }
 
         if (total == 0)
         {
@@ -307,27 +316,14 @@ public partial class CollectFriendsPage : ContentPage
             ColumnSpacing = 8
         };
 
-        var infoStack = new VerticalStackLayout { Spacing = 2 };
-
-        var displayText = !string.IsNullOrEmpty(friend.DisplayName)
-            ? friend.DisplayName
-            : friend.Username;
-
-        infoStack.Children.Add(new Label
-        {
-            Text = displayText,
-            FontSize = 14,
-            FontFamily = "InterSemiBold"
-        });
-
-        infoStack.Children.Add(new Label
+        var usernameLabel = new Label
         {
             Text = $"@{friend.Username}",
-            FontSize = 12,
-            TextColor = GetThemeColor("Gray400", "#8B8F96")
-        });
+            FontSize = 14,
+            FontFamily = "InterSemiBold"
+        };
 
-        grid.Children.Add(infoStack);
+        grid.Children.Add(usernameLabel);
 
         if (alreadyExists)
         {
@@ -370,17 +366,25 @@ public partial class CollectFriendsPage : ContentPage
 
     private async void OnActionClicked(object? sender, EventArgs e)
     {
+        // Phase: Loading → start collection
+        if (_phase == PagePhase.Loading && !_jsInjected)
+        {
+            await StartCollection();
+            return;
+        }
+
+        // Phase: Results with new friends → import
         if (_phase == PagePhase.Results && _newFriendsCount > 0)
         {
             ImportNewFriends();
             await DisplayAlert("Import Complete",
                 $"{_newFriendsCount} friend{(_newFriendsCount == 1 ? "" : "s")} added to your streak list.", "OK");
             await Navigation.PopAsync();
+            return;
         }
-        else
-        {
-            await Navigation.PopAsync();
-        }
+
+        // Default: go back
+        await Navigation.PopAsync();
     }
 
     private void ImportNewFriends()
@@ -397,7 +401,7 @@ public partial class CollectFriendsPage : ContentPage
             var config = new FriendConfig
             {
                 Username = friend.Username,
-                DisplayName = friend.DisplayName ?? string.Empty,
+                DisplayName = string.Empty,
                 IsEnabled = true
             };
             existingFriends.Add(config);

@@ -52,11 +52,11 @@
             </VerticalStackLayout>
         </Grid>
 
-        <!-- ─── Collection Status Overlay ─── -->
+        <!-- ─── Collection Status Overlay (semi-transparent — WebView stays visible) ─── -->
         <Grid x:Name="CollectingOverlay"
               Grid.Row="1"
               IsVisible="False"
-              BackgroundColor="{AppThemeBinding Light={StaticResource OverlayLight}, Dark={StaticResource OverlayDark}}">
+              BackgroundColor="{AppThemeBinding Light=#B0FFFFFF, Dark=#B0000000}">
             <VerticalStackLayout VerticalOptions="Center" HorizontalOptions="Center" Spacing="16" Padding="32">
                 <ActivityIndicator IsRunning="True"
                                    Color="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource White}}"

@@ -1,5 +1,6 @@
 // TikTok Friend Collection Script
-// Injected into the TikTok messages WebView to scrape all chat usernames.
+// Mirrors the proven approach from tiktok_automation.js:
+//   click each chat item → wait → read username from chat header
 // Communicates state via window.__feenerState, polled by C#.
 
 (function () {
@@ -12,14 +13,19 @@
         error: null
     };
 
-    var collected = {};        // lowercase username → { username, displayName }
+    var collected = {};     // lowercase username → { username, displayName }
+    var chatItems = [];
+    var chatIndex = 0;
     var maxScrollAttempts = 15;
     var scrollAttempts = 0;
-    var needsClickFallback = false;
+
+    // ── Logging (console only, no StreakApp bridge here) ─────────────────────
 
     var log = function (msg) {
         console.log('[Feener Collect] ' + msg);
     };
+
+    // ── State reporting ─────────────────────────────────────────────────────
 
     var updateState = function (status) {
         var list = [];
@@ -37,8 +43,17 @@
 
     var reportError = function (msg) {
         log('ERROR: ' + msg);
-        window.__feenerState.status = 'error';
-        window.__feenerState.error = msg;
+        var list = [];
+        var keys = Object.keys(collected);
+        for (var i = 0; i < keys.length; i++) {
+            list.push(collected[keys[i]]);
+        }
+        window.__feenerState = {
+            status: 'error',
+            count: list.length,
+            friends: list,
+            error: msg
+        };
     };
 
     var reportDone = function () {
@@ -46,29 +61,38 @@
         log('Collection complete. Found ' + window.__feenerState.count + ' unique friends.');
     };
 
-    // ── Selector reuse from tiktok_automation.js ────────────────────────────
+    // ── Copied from tiktok_automation.js (proven, battle-tested) ────────────
 
     var findChatItems = function () {
-        var selectors = [
-            "[data-e2e*='chat-list-item']",
+        // Primary selector (v1.8.0 original)
+        var items = document.querySelectorAll("[data-e2e*='chat-list-item']");
+        if (items.length > 0) {
+            log('Found ' + items.length + ' items via primary: chat-list-item');
+            return items;
+        }
+
+        // Fallback selectors — TikTok periodically renames data-e2e values
+        var fallbacks = [
             "[data-e2e*='dm-new-conversation-item']",
             "[data-e2e*='chat-item']"
         ];
-        for (var i = 0; i < selectors.length; i++) {
+        for (var i = 0; i < fallbacks.length; i++) {
             try {
-                var items = document.querySelectorAll(selectors[i]);
+                items = document.querySelectorAll(fallbacks[i]);
                 if (items.length > 0) {
-                    log('Found ' + items.length + ' items via: ' + selectors[i]);
+                    log('Found ' + items.length + ' items via fallback: ' + fallbacks[i]);
                     return items;
                 }
             } catch (e) { }
         }
-        return [];
+
+        // Nothing found
+        return document.querySelectorAll("[data-e2e*='chat-list-item']");
     };
 
-    var findChatListContainer = function (items) {
-        if (items.length > 0) {
-            var parent = items[0].parentElement;
+    var findChatListContainer = function () {
+        if (chatItems.length > 0) {
+            var parent = chatItems[0].parentElement;
             while (parent && parent !== document.body) {
                 if (parent.scrollHeight > parent.clientHeight + 10) {
                     return parent;
@@ -85,36 +109,8 @@
         return null;
     };
 
-    // ── Username extraction ─────────────────────────────────────────────────
-
-    // Strategy 1: Direct link extraction from a chat list item (fast, no clicks)
-    var extractFromItem = function (item) {
-        var links = item.querySelectorAll('a[href*="/@"]');
-        for (var i = 0; i < links.length; i++) {
-            var href = links[i].getAttribute('href') || '';
-            var match = href.match(/\/@([^\/\?\#]+)/);
-            if (match && match[1]) {
-                // Also try to grab a visible display name from the item
-                var displayName = '';
-                var nameEl = item.querySelector('[class*="UserName"], [class*="username"], [class*="NickName"], [class*="nickname"]');
-                if (nameEl) {
-                    displayName = (nameEl.textContent || '').trim();
-                }
-                // If no class-based match, try the link text itself
-                if (!displayName) {
-                    var linkText = (links[i].textContent || '').trim();
-                    if (linkText && linkText !== '@' + match[1]) {
-                        displayName = linkText;
-                    }
-                }
-                return { username: match[1], displayName: displayName };
-            }
-        }
-        return null;
-    };
-
-    // Strategy 2: Click the item, read username from chat header (slower fallback)
-    var extractFromHeader = function () {
+    var findCurrentChatUsername = function () {
+        // Find the username from the chat header (the opened conversation)
         var chatHeader = document.querySelector('[class*="ChatHeader"]') ||
                          document.querySelector('[class*="chatHeader"]') ||
                          document.querySelector('[class*="DivChatHeader"]');
@@ -123,119 +119,101 @@
             var headerLink = chatHeader.querySelector('a[href*="/@"]');
             if (headerLink) {
                 var href = headerLink.getAttribute('href') || '';
-                var match = href.match(/\/@([^\/\?\#]+)/);
-                if (match && match[1]) {
-                    var displayName = (headerLink.textContent || '').trim();
-                    return { username: match[1], displayName: displayName || '' };
-                }
+                var match = href.match(/\/@([^\/]+)/);
+                return match ? match[1] : '';
             }
         }
 
-        // Fallback: styled links outside of data-e2e containers
+        // Fallback: look for links with no data-e2e parent (usually header area)
         var links = document.querySelectorAll('[class*="StyledLink"]');
         for (var i = 0; i < links.length; i++) {
             var link = links[i];
             var parent = link.closest('[data-e2e]');
             var parentAttr = parent ? parent.getAttribute('data-e2e') : '';
+
+            // Skip inbox items, only look at header/none area
             if (!parentAttr || parentAttr === 'chat-header') {
                 var href = link.getAttribute('href') || '';
-                var match = href.match(/\/@([^\/\?\#]+)/);
+                var match = href.match(/\/@([^\/]+)/);
                 if (match && match[1]) {
-                    return { username: match[1], displayName: (link.textContent || '').trim() };
+                    return match[1];
                 }
             }
         }
-        return null;
+
+        return '';
     };
 
-    var addFriend = function (info) {
-        if (!info || !info.username) return false;
-        var key = info.username.toLowerCase().trim();
+    var dumpPageDiagnostics = function () {
+        log('=== PAGE DIAGNOSTICS ===');
+        log('URL: ' + window.location.href);
+        log('Title: ' + document.title);
+
+        var allE2e = document.querySelectorAll('[data-e2e]');
+        var uniqueVals = {};
+        for (var i = 0; i < allE2e.length; i++) {
+            var val = allE2e[i].getAttribute('data-e2e');
+            if (val) uniqueVals[val] = true;
+        }
+        var keys = Object.keys(uniqueVals);
+        log('Total data-e2e elements: ' + allE2e.length + ', Unique attributes: ' + keys.length);
+
+        var chunk = [];
+        for (var j = 0; j < keys.length; j++) {
+            chunk.push(keys[j]);
+            if (chunk.length >= 15 || j === keys.length - 1) {
+                log('data-e2e snippet: ' + chunk.join(', '));
+                chunk = [];
+            }
+        }
+
+        log('=== END DIAGNOSTICS ===');
+    };
+
+    // ── Collection logic ────────────────────────────────────────────────────
+
+    var addFriend = function (username) {
+        if (!username) return false;
+        var key = username.toLowerCase().trim();
         if (key.length < 1 || collected[key]) return false;
-        collected[key] = {
-            username: info.username.trim(),
-            displayName: info.displayName || ''
-        };
-        log('Collected: @' + info.username + (info.displayName ? ' (' + info.displayName + ')' : ''));
+        collected[key] = { username: username.trim(), displayName: '' };
+        log('Collected: @' + username + ' (' + Object.keys(collected).length + ' total)');
         return true;
     };
 
-    // ── Direct extraction pass (no clicking) ────────────────────────────────
-
-    var directExtractAll = function (items) {
-        var foundAny = false;
-        for (var i = 0; i < items.length; i++) {
-            var info = extractFromItem(items[i]);
-            if (info) {
-                addFriend(info);
-                foundAny = true;
-            }
-        }
-        return foundAny;
-    };
-
-    // ── Click fallback pass ─────────────────────────────────────────────────
-
-    var clickExtractAll = function (items, startIndex, callback) {
-        if (startIndex >= items.length) {
-            callback();
+    // Click each chat item, wait, read the username from the header.
+    // This mirrors checkNextChat() from tiktok_automation.js exactly.
+    var collectNextChat = function () {
+        if (chatIndex >= chatItems.length) {
+            // All visible items processed — try scrolling for more
+            log('Processed all ' + chatItems.length + ' visible items. Trying scroll...');
+            scrollAndCollectMore();
             return;
         }
 
-        var item = items[startIndex];
-        item.click();
+        var chatItem = chatItems[chatIndex];
+        log('Clicking chat item ' + (chatIndex + 1) + '/' + chatItems.length);
+        chatItem.click();
         updateState('collecting');
 
+        // Same 1500ms wait as tiktok_automation.js
         setTimeout(function () {
-            var info = extractFromHeader();
-            if (info) {
-                addFriend(info);
+            var username = findCurrentChatUsername();
+            if (username) {
+                addFriend(username);
+            } else {
+                log('Could not read username from chat header for item ' + (chatIndex + 1));
             }
+
             updateState('collecting');
-            clickExtractAll(items, startIndex + 1, callback);
-        }, 800);
+            chatIndex++;
+            collectNextChat();
+        }, 1500);
     };
 
-    // ── Scroll to load more ─────────────────────────────────────────────────
-
-    var processCurrentItems = function (callback) {
-        var items = findChatItems();
-        if (items.length === 0) {
-            callback();
-            return;
-        }
-
-        if (!needsClickFallback) {
-            // Try direct extraction first
-            var directWorked = directExtractAll(items);
-            if (!directWorked && Object.keys(collected).length === 0) {
-                // Direct extraction found nothing — switch to click fallback
-                log('Direct extraction failed, switching to click fallback');
-                needsClickFallback = true;
-                clickExtractAll(items, 0, callback);
-            } else {
-                updateState('collecting');
-                callback();
-            }
-        } else {
-            // Already in click fallback mode — only click items we haven't processed
-            // Mark items we've already clicked by a data attribute
-            var unprocessed = [];
-            for (var i = 0; i < items.length; i++) {
-                if (!items[i].getAttribute('data-feener-processed')) {
-                    items[i].setAttribute('data-feener-processed', '1');
-                    unprocessed.push(items[i]);
-                }
-            }
-            if (unprocessed.length > 0) {
-                clickExtractAll(unprocessed, 0, callback);
-            } else {
-                callback();
-            }
-        }
-    };
-
-    var scrollAndContinue = function () {
+    // Scroll the chat list to load more items, then continue collecting.
+    // Mirrors scrollAndRetry() from tiktok_automation.js.
+    var scrollAndCollectMore = function () {
         scrollAttempts++;
         if (scrollAttempts > maxScrollAttempts) {
             log('Max scroll attempts reached (' + maxScrollAttempts + ')');
@@ -243,15 +221,14 @@
             return;
         }
 
-        var items = findChatItems();
-        var container = findChatListContainer(items);
+        var container = findChatListContainer();
         if (!container) {
-            log('No scrollable container found — done');
+            log('No scrollable chat container found — done');
             reportDone();
             return;
         }
 
-        var prevCount = items.length;
+        var prevCount = chatItems.length;
         var prevScrollTop = container.scrollTop;
         container.scrollTop = container.scrollHeight;
         updateState('scrolling');
@@ -259,26 +236,21 @@
         log('Scrolling chat list (attempt ' + scrollAttempts + '/' + maxScrollAttempts + ')...');
 
         setTimeout(function () {
-            var newItems = findChatItems();
-            log('After scroll: ' + newItems.length + ' items (was ' + prevCount + ')');
+            chatItems = findChatItems();
+            log('After scroll: ' + chatItems.length + ' items (was ' + prevCount + ')');
 
-            if (newItems.length > prevCount) {
-                // New items loaded — process them
-                processCurrentItems(function () {
-                    scrollAndContinue();
-                });
+            if (chatItems.length > prevCount) {
+                // New items loaded — continue from where we left off
+                // chatIndex already points to the first unprocessed item
+                collectNextChat();
             } else if (container.scrollTop > prevScrollTop) {
                 // Scroll moved but no new items yet — wait a bit more
                 setTimeout(function () {
-                    var retryItems = findChatItems();
-                    if (retryItems.length > prevCount) {
-                        processCurrentItems(function () {
-                            scrollAndContinue();
-                        });
+                    chatItems = findChatItems();
+                    if (chatItems.length > prevCount) {
+                        collectNextChat();
                     } else {
-                        // No new items after extra wait — we've reached the end
-                        log('No new items after scroll — end of list');
-                        reportDone();
+                        scrollAndCollectMore();
                     }
                 }, 2000);
             } else {
@@ -289,41 +261,76 @@
         }, 2000);
     };
 
+    // ── Page detection (JS-owned, not reliant on C#) ────────────────────────
+
+    var detectPageState = function () {
+        var url = window.location.href.toLowerCase();
+
+        // Login page detection
+        if (url.indexOf('/login') !== -1) {
+            return 'login';
+        }
+
+        // Check if we're on the messages page
+        if (url.indexOf('/messages') !== -1 || url.indexOf('/message') !== -1) {
+            return 'messages';
+        }
+
+        // Unknown page
+        return 'unknown';
+    };
+
     // ── Entry point ─────────────────────────────────────────────────────────
 
     var init = function () {
         try {
             log('Starting friend collection...');
-            updateState('collecting');
+            log('Current URL: ' + window.location.href);
 
-            var items = findChatItems();
-            log('Initial chat items: ' + items.length);
+            var page = detectPageState();
 
-            if (items.length === 0) {
-                // Page might still be loading — retry once after 5 seconds
-                log('No chat items found, retrying in 5s...');
-                setTimeout(function () {
-                    items = findChatItems();
-                    log('Retry: ' + items.length + ' chat items');
-                    if (items.length === 0) {
-                        reportError('No chat items found on this page. Make sure you have DM conversations.');
-                        return;
-                    }
-                    processCurrentItems(function () {
-                        scrollAndContinue();
-                    });
-                }, 5000);
+            if (page === 'login') {
+                reportError('Not logged in. Please log in to TikTok first.');
                 return;
             }
 
-            processCurrentItems(function () {
-                scrollAndContinue();
-            });
+            if (page === 'unknown') {
+                log('Unknown page, but will still attempt to find chat items...');
+            }
+
+            // Wait 3s for the SPA to render (same as tiktok_automation.js)
+            setTimeout(function () {
+                chatItems = findChatItems();
+                log('Found ' + chatItems.length + ' chat items');
+
+                if (chatItems.length === 0) {
+                    dumpPageDiagnostics();
+                    // Retry once after 5 more seconds (page might still be loading)
+                    log('Retrying in 5 seconds...');
+                    setTimeout(function () {
+                        chatItems = findChatItems();
+                        log('Retry: Found ' + chatItems.length + ' chat items');
+                        if (chatItems.length === 0) {
+                            dumpPageDiagnostics();
+                            reportError('No chat items found. Make sure you are on the Messages page and have DM conversations.');
+                            return;
+                        }
+                        updateState('collecting');
+                        collectNextChat();
+                    }, 5000);
+                    return;
+                }
+
+                updateState('collecting');
+                collectNextChat();
+            }, 3000);
+
         } catch (e) {
+            log('Error: ' + e.message);
             reportError('Unexpected error: ' + e.message);
         }
     };
 
-    // Wait for the messages page to fully render
-    setTimeout(init, 3000);
+    // Start
+    init();
 })();
