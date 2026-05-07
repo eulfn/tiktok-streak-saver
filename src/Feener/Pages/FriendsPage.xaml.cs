@@ -15,11 +15,8 @@ public partial class FriendsPage : ContentPage
 
     // ── Collect mode state ──────────────────────────────────────────────────
     private bool _lastCollectRunning = false;
-private bool _lastCollectRunning = false;
-private bool _lastIsDone = false;
-private bool _isExportingCollectLogs = false;
-private List<(string Username, string DisplayName)> _collectedFriends = new();
-private string _lastCollectedSignature = string.Empty;
+    private bool _lastIsDone = false;
+    private bool _isExportingCollectLogs = false;
     private List<(string Username, string DisplayName)> _collectedFriends = new();
     private string _lastCollectedSignature = string.Empty;
 
@@ -104,7 +101,9 @@ private string _lastCollectedSignature = string.Empty;
             UpdateCollectUI();
         }
 
-        // While collecting, update the results list in real-time
+        // While collecting, update the collected staging list in real-time.
+        // Friends are not added to the streak list here — the user drives that
+        // explicitly via the Add button on each collected item.
         if (collectRunning)
         {
             var current = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedFriends();
@@ -113,65 +112,25 @@ private string _lastCollectedSignature = string.Empty;
             {
                 _collectedFriends = current;
                 _lastCollectedSignature = currentSignature;
-
-                // ── Auto-Sync: Add new friends immediately ──
-                var existingFriends = _settingsService.GetFriendsList();
-                var existingSet = new HashSet<string>(existingFriends.Select(f => f.Username.ToLowerInvariant()));
-                bool addedNew = false;
-
-                foreach (var friend in current)
-                {
-                    if (!existingSet.Contains(friend.Username.ToLowerInvariant()))
-                    {
-                        _settingsService.AddFriend(new Feener.Models.FriendConfig
-                        {
-                            Username = friend.Username,
-                            DisplayName = friend.DisplayName,
-                            IsEnabled = true
-                        });
-                        addedNew = true;
-                    }
-                }
-
-                if (addedNew)
-                {
-                    LoadFriendsList();
-                }
-
                 RebuildCollectedList();
             }
             var status = Feener.Platforms.Android.Services.CollectFriendsService.GetStatusMessage();
             if (status != null) CollectStatusLabel.Text = status;
         }
 
-        // When done, do a final update and clean up
-        if (!collectRunning && Feener.Platforms.Android.Services.CollectFriendsService.IsDone)
+        bool isDone = Feener.Platforms.Android.Services.CollectFriendsService.IsDone;
+
+        // When done, run exactly once per completed run (guard prevents re-firing every timer tick).
+        // Only update the collected staging list and status label — no automatic streak list mutations.
+        if (!collectRunning && isDone && !_lastIsDone)
         {
+            _lastIsDone = isDone;
             var collected = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedFriends();
             _collectedFriends = collected;
             _lastCollectedSignature = BuildCollectedSignature(collected);
 
             var status = Feener.Platforms.Android.Services.CollectFriendsService.GetStatusMessage();
             if (status != null) CollectStatusLabel.Text = status;
-
-            // ── Auto-Sync: Remove friends not found in the new collection ──
-            var existingFriends = _settingsService.GetFriendsList();
-            var collectedSet = new HashSet<string>(collected.Select(c => c.Username.ToLowerInvariant()));
-            bool removedOld = false;
-
-            foreach (var friend in existingFriends)
-            {
-                if (!collectedSet.Contains(friend.Username.ToLowerInvariant()))
-                {
-                    _settingsService.RemoveFriend(friend.Id);
-                    removedOld = true;
-                }
-            }
-
-            if (removedOld)
-            {
-                LoadFriendsList();
-            }
 
             RebuildCollectedList();
         }
