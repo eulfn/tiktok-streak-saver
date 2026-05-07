@@ -95,6 +95,7 @@ public partial class FriendsPage : ContentPage
         // ── Collect mode: track CollectFriendsService state ──
 #if ANDROID
         bool collectRunning = Feener.Platforms.Android.Services.CollectFriendsService.IsRunning;
+        bool isDone = Feener.Platforms.Android.Services.CollectFriendsService.IsDone;
         if (collectRunning != _lastCollectRunning)
         {
             _lastCollectRunning = collectRunning;
@@ -118,13 +119,10 @@ public partial class FriendsPage : ContentPage
             if (status != null) CollectStatusLabel.Text = status;
         }
 
-        bool isDone = Feener.Platforms.Android.Services.CollectFriendsService.IsDone;
-
         // When done, run exactly once per completed run (guard prevents re-firing every timer tick).
         // Only update the collected staging list and status label — no automatic streak list mutations.
         if (!collectRunning && isDone && !_lastIsDone)
         {
-            _lastIsDone = isDone;
             var collected = Feener.Platforms.Android.Services.CollectFriendsService.GetCollectedFriends();
             _collectedFriends = collected;
             _lastCollectedSignature = BuildCollectedSignature(collected);
@@ -133,7 +131,11 @@ public partial class FriendsPage : ContentPage
             if (status != null) CollectStatusLabel.Text = status;
 
             RebuildCollectedList();
+            _lastIsDone = true;
         }
+
+        if (!isDone)
+            _lastIsDone = false;
 #endif
     }
 
