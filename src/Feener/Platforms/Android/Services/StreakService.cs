@@ -38,6 +38,18 @@ public class StreakService : Service
     private readonly Random _rng = new();
     private const string UserNotFoundError = "User not found in chat list";
 
+    private static readonly string[] DesktopUserAgents =
+    {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    };
+
     // ── Burst Mode state (Smart Daily Quota) ──
     private bool _isBurstMode = false;
     private List<string> _burstMessages = new();
@@ -362,12 +374,10 @@ public class StreakService : Service
             _webView.Settings.DatabaseEnabled = true;
             _webView.Settings.CacheMode = CacheModes.Normal;
 
-            // Use the same UA that was used during login to maintain session consistency.
-            // Falls back to Chrome 91 desktop UA which avoids TikTok bot detection.
-            var sessionService = new SessionService();
-            var loginUa = sessionService.GetLoginUserAgent()
-                ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-            _webView.Settings.UserAgentString = loginUa;
+            // Use a random desktop UA so TikTok serves the desktop DOM, which has
+            // the data-e2e selectors the automation script depends on.
+            // The login session cookie is UA-independent so this doesn't break auth.
+            _webView.Settings.UserAgentString = DesktopUserAgents[_rng.Next(DesktopUserAgents.Length)];
             _webView.Settings.SetSupportZoom(true);
             _webView.Settings.BuiltInZoomControls = true;
 
