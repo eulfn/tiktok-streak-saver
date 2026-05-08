@@ -26,32 +26,8 @@
             return items;
         }
 
-        // Fallback selectors — TikTok periodically renames data-e2e values
-        var fallbacks = [
-            "[data-e2e*='chat-list-item']",
-            "[data-e2e*='inbox-list-item']",
-            "[data-e2e*='chat-item']"
-        ];
-        for (var i = 0; i < fallbacks.length; i++) {
-            try {
-                items = document.querySelectorAll(fallbacks[i]);
-                if (items.length > 0) {
-                    log('Found ' + items.length + ' items via fallback: ' + fallbacks[i]);
-                    return items;
-                }
-            } catch (e) { }
-        }
-
-        // All selectors failed — log every data-e2e value on the page for diagnosis
-        var allE2e = document.querySelectorAll('[data-e2e]');
-        var vals = [];
-        for (var j = 0; j < allE2e.length; j++) {
-            var v = allE2e[j].getAttribute('data-e2e');
-            if (v && vals.indexOf(v) === -1) vals.push(v);
-        }
-        log('WARNING: All chat-item selectors returned 0 results. Current data-e2e values on page: ' + vals.join(', '));
-
-        return document.querySelectorAll("[data-e2e='dm-new-conversation-item']");
+        log('WARNING: No dm-new-conversation-item elements found on page');
+        return items;
     };
 
     var findChatListContainer = function () {
