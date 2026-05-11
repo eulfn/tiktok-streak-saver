@@ -22,15 +22,11 @@ public partial class ProfilePage : ContentPage
         return Color.FromArgb(fallbackHex);
     }
 
-    protected override async void OnAppearing()
+    protected override void OnAppearing()
     {
         base.OnAppearing();
-
-        this.Opacity = 0;
-        this.TranslationY = 12;
-        await Task.WhenAll(
-            this.FadeTo(1, 280, Easing.SinInOut),
-            this.TranslateTo(0, 0, 280, Easing.SinInOut));
+        this.Opacity = 1;
+        this.TranslationY = 0;
 
         LoadProfilePhoto();
 
@@ -120,10 +116,8 @@ public partial class ProfilePage : ContentPage
         _sessionService.SetDisplayName(DisplayNameEntry.Text ?? "User");
     }
 
-    private async void UpdateLoginButtonState(bool isSessionValid)
+    private void UpdateLoginButtonState(bool isSessionValid)
     {
-        await LoginButton.FadeTo(0.5, 100);
-
         if (isSessionValid)
         {
             LoginButton.Text = "Session OK";
@@ -144,7 +138,6 @@ public partial class ProfilePage : ContentPage
             SessionLastCheckLabel.Text = "Tap below to login";
         }
 
-        await LoginButton.FadeTo(1.0, 200);
     }
 
     // ─── Actions ────────────────────────────────────────────────────────────────

@@ -29,14 +29,11 @@ public partial class HistoryPage : ContentPage
 
     private bool _isBurstModeActive = false;
 
-    protected override async void OnAppearing()
+    protected override void OnAppearing()
     {
         base.OnAppearing();
-        this.Opacity = 0;
-        this.TranslationY = 12;
-        await Task.WhenAll(
-            this.FadeTo(1, 280, Easing.SinInOut),
-            this.TranslateTo(0, 0, 280, Easing.SinInOut));
+        this.Opacity = 1;
+        this.TranslationY = 0;
 
         _isBurstModeActive = _settingsService.IsBurstModeActive();
         if (_isBurstModeActive) SetBurstModeUI();

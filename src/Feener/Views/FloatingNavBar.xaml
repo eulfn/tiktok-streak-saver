@@ -79,7 +79,7 @@
                           WidthRequest="24" HeightRequest="24"
                           HorizontalOptions="Center" VerticalOptions="Center"/>
                 </Border>
-                <Label x:Name="FriendsLabel" Text="Friends"
+                <Label x:Name="FriendsLabel" Text="List"
                        FontFamily="InterMedium" FontSize="10"
                        HorizontalOptions="Center"
                        TextColor="{AppThemeBinding Light={StaticResource Gray400}, Dark={StaticResource Gray500}}"/>

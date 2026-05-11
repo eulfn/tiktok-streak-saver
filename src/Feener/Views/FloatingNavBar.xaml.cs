@@ -9,7 +9,7 @@ public partial class FloatingNavBar : ContentView
 {
     /// <summary>
     /// Bindable property to set which tab is currently selected.
-    /// Values: "Dashboard", "History", "Friends", "Profile"
+    /// Values: "Dashboard", "History", "List", "Profile"
     /// </summary>
     public static readonly BindableProperty CurrentTabProperty =
         BindableProperty.Create(nameof(CurrentTab), typeof(string), typeof(FloatingNavBar), "Dashboard",
@@ -82,7 +82,7 @@ public partial class FloatingNavBar : ContentView
         {
             case "History":
                 activeIndicator = HistoryIndicator; activeIcon = HistoryIcon; activeLabel = HistoryLabel; break;
-            case "Friends":
+            case "List":
                 activeIndicator = FriendsIndicator; activeIcon = FriendsIcon; activeLabel = FriendsLabel; break;
             case "Profile":
                 activeIndicator = ProfileIndicator; activeIcon = ProfileIcon; activeLabel = ProfileLabel; break;
@@ -99,37 +99,26 @@ public partial class FloatingNavBar : ContentView
     private async void OnDashboardTapped(object? sender, TappedEventArgs e)
     {
         if (CurrentTab == "Dashboard") return;
-        await AnimatePress(DashboardIndicator);
         await Shell.Current.GoToAsync("//DashboardPage");
     }
 
     private async void OnHistoryTapped(object? sender, TappedEventArgs e)
     {
         if (CurrentTab == "History") return;
-        await AnimatePress(HistoryIndicator);
         await Shell.Current.GoToAsync("//HistoryPage");
     }
 
     private async void OnFriendsTapped(object? sender, TappedEventArgs e)
     {
-        if (CurrentTab == "Friends") return;
-        await AnimatePress(FriendsIndicator);
+        if (CurrentTab == "List") return;
         await Shell.Current.GoToAsync("//FriendsPage");
     }
 
     private async void OnProfileTapped(object? sender, TappedEventArgs e)
     {
         if (CurrentTab == "Profile") return;
-        await AnimatePress(ProfileIndicator);
         await Shell.Current.GoToAsync("//ProfilePage");
     }
 
-    /// <summary>
-    /// Subtle scale micro-animation on tab press.
-    /// </summary>
-    private static async Task AnimatePress(View target)
-    {
-        await target.ScaleTo(0.85, 60, Easing.CubicIn);
-        await target.ScaleTo(1.0, 100, Easing.CubicOut);
-    }
+
 }

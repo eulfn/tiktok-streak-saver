@@ -38,17 +38,12 @@ public partial class DashboardPage : ContentPage
         return Color.FromArgb(fallbackHex);
     }
 
-    protected override async void OnAppearing()
+    protected override void OnAppearing()
     {
         base.OnAppearing();
         _isAppInForeground = true;
-
-        // Non-linear transition animation
-        this.Opacity = 0;
-        this.TranslationY = 12;
-        await Task.WhenAll(
-            this.FadeTo(1, 280, Easing.SinInOut),
-            this.TranslateTo(0, 0, 280, Easing.SinInOut));
+        this.Opacity = 1;
+        this.TranslationY = 0;
 
         // Update greeting
         GreetingLabel.Text = $"Hi, {_sessionService.GetDisplayName()}";
@@ -281,38 +276,36 @@ public partial class DashboardPage : ContentPage
         SetBurstModeUI();
     }
 
-    private async void SetNormalModeUI()
+    private void SetNormalModeUI()
     {
         if (BurstModeContainer.IsVisible)
         {
-            await BurstModeContainer.FadeTo(0, 150, Easing.CubicIn);
             BurstModeContainer.IsVisible = false;
+            BurstModeContainer.Opacity = 0;
         }
         NormalModeTabBorder.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
         NormalModeTabLabel.TextColor = GetThemeColor("White", "#FFFFFF");
         BurstModeTabBorder.BackgroundColor = Colors.Transparent;
         BurstModeTabLabel.TextColor = GetThemeColor("Gray600", "#4B5563");
-        NormalModeContainer.Opacity = 0;
         NormalModeContainer.IsVisible = true;
-        await NormalModeContainer.FadeTo(1, 200, Easing.CubicOut);
+        NormalModeContainer.Opacity = 1;
         MasterRunButton.Text = "Run Normal";
         MasterRunButton.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
     }
 
-    private async void SetBurstModeUI()
+    private void SetBurstModeUI()
     {
         if (NormalModeContainer.IsVisible)
         {
-            await NormalModeContainer.FadeTo(0, 150, Easing.CubicIn);
             NormalModeContainer.IsVisible = false;
+            NormalModeContainer.Opacity = 0;
         }
         BurstModeTabBorder.BackgroundColor = GetThemeColor("BurstAccent", "#8B5CF6");
         BurstModeTabLabel.TextColor = Colors.White;
         NormalModeTabBorder.BackgroundColor = Colors.Transparent;
         NormalModeTabLabel.TextColor = GetThemeColor("Gray600", "#4B5563");
-        BurstModeContainer.Opacity = 0;
         BurstModeContainer.IsVisible = true;
-        await BurstModeContainer.FadeTo(1, 200, Easing.CubicOut);
+        BurstModeContainer.Opacity = 1;
         MasterRunButton.Text = "Run Burst";
         MasterRunButton.BackgroundColor = GetThemeColor("BurstAccent", "#8B5CF6");
     }
@@ -549,9 +542,6 @@ public partial class DashboardPage : ContentPage
 
     private async void OnMasterRunClicked(object? sender, EventArgs e)
     {
-        // Haptic press animation
-        await MasterRunButton.ScaleTo(0.94, 60, Easing.CubicIn);
-        await MasterRunButton.ScaleTo(1.0, 100, Easing.CubicOut);
 
         bool isBurstMode = _settingsService.IsBurstModeActive();
         if (isBurstMode)
@@ -598,11 +588,8 @@ public partial class DashboardPage : ContentPage
         }
     }
 
-    private async void OnStopServiceClicked(object? sender, EventArgs e)
+    private void OnStopServiceClicked(object? sender, EventArgs e)
     {
-        // Haptic press animation for stop button
-        await StopServiceButton.ScaleTo(0.94, 60, Easing.CubicIn);
-        await StopServiceButton.ScaleTo(1.0, 100, Easing.CubicOut);
 #if ANDROID
         var context = Platform.CurrentActivity ?? Android.App.Application.Context;
         Feener.Platforms.Android.StreakScheduler.StopService(context);

@@ -1,14 +1,13 @@
 ## What's new in this release (v4.0.2)
 
-### Group Chat Support & Scheduling Enhancements
+### UI Refactoring & Performance Upgrades
 
-This update brings significant new features to streak automation, including support for group chats and precise daily scheduling:
+This update brings a significant structural change to how friends and group chats are managed, along with performance upgrades across the entire application interface.
 
-- Group Chat Support: Added the ability to manage and send streaks to group chats. You can now toggle the "Group Chat" option when adding a new friend, which will target the exact group chat name rather than a profile username.
-- Fixed Daily Schedule: Added a new "Daily Schedule" option in the Profile settings. Instead of relying on a shifting hourly interval, you can now configure the background automation to run at the exact same time every day (e.g., always at 9:00 AM).
-- Automation Accuracy: Implemented a "true new item" counter during the background scanning process. This better handles TikTok's virtualized chat list rendering, significantly increasing script reliability and preventing missed chats.
-- Store Integration: Added a dedicated, high-resolution dark icon to the images directory to ensure third-party stores (like Orion) fetch and display the app icon perfectly.
-- UI Polishing: Refined the friend list interface to cleanly differentiate between direct messages and group chats with professional text labels.
+- **List Management Hub**: The 'Friends' page has been completely redesigned into a unified 'List' tab. The interface now features a tab switcher (identical to the Dashboard) to separate your Direct Messages and Group Chats into two distinct lists.
+- **Contextual Management**: The manual "Group Chat" toggle switch has been removed. Tapping 'Add' on the Friends tab will automatically prompt for a username, while tapping 'Add' on the Groups tab will automatically prompt for a group name.
+- **Contextual Actions**: Action buttons like "Clear" are now scoped to your current view. Clearing the Friends tab will wipe out DMs without touching your groups, and vice versa.
+- **Snappier Interface**: Removed all micro-animations and transition delays across the application. Menus, tabs, and buttons now respond instantly with zero artificial lag, providing a much faster user experience.
 
 --------
 

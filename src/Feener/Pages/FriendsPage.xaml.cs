@@ -24,16 +24,14 @@ public partial class FriendsPage : ContentPage
 
     private bool _lastIsRunning = false;
     private IDispatcherTimer? _statusTimer;
+    private bool _isGroupMode = false;
 
-    protected override async void OnAppearing()
+    protected override void OnAppearing()
     {
         base.OnAppearing();
-        this.Opacity = 0;
-        this.TranslationY = 12;
-        await Task.WhenAll(
-            this.FadeTo(1, 280, Easing.SinInOut),
-            this.TranslateTo(0, 0, 280, Easing.SinInOut));
-        LoadFriendsList();
+        this.Opacity = 1;
+        this.TranslationY = 0;
+        LoadLists();
 
         if (_statusTimer == null)
         {
@@ -65,73 +63,69 @@ public partial class FriendsPage : ContentPage
         if (_lastIsRunning != isRunning)
         {
             _lastIsRunning = isRunning;
-            LoadFriendsList();
+            LoadLists();
 
-            SearchAndBulkRow.IsEnabled = !isRunning;
-            SearchAndBulkRow.Opacity = isRunning ? 0.6 : 1.0;
-            
             ActionButtonsGrid.IsEnabled = !isRunning;
             ActionButtonsGrid.Opacity = isRunning ? 0.6 : 1.0;
+            GroupActionButtonsGrid.IsEnabled = !isRunning;
+            GroupActionButtonsGrid.Opacity = isRunning ? 0.6 : 1.0;
 
-            if (AddFriendPanel.IsVisible && isRunning)
-            {
-                AddFriendPanel.IsVisible = false;
-            }
+            if (AddFriendPanel.IsVisible && isRunning) AddFriendPanel.IsVisible = false;
+            if (AddGroupPanel.IsVisible && isRunning) AddGroupPanel.IsVisible = false;
         }
     }
 
     private void OnRefreshing(object? sender, EventArgs e)
     {
-        LoadFriendsList();
+        LoadLists();
         MainRefreshView.IsRefreshing = false;
     }
 
-    private void LoadFriendsList()
+    private void LoadLists()
     {
-        var allFriends = _settingsService.GetFriendsList();
-        SearchAndBulkRow.IsVisible = allFriends.Count > 0;
+        var allItems = _settingsService.GetFriendsList();
+        
+        var friends = allItems.Where(f => !f.IsGroup).ToList();
+        var groups = allItems.Where(f => f.IsGroup).ToList();
 
-        var searchText = SearchFriendEntry.Text?.Trim() ?? string.Empty;
-        var displayFriends = allFriends;
-        if (!string.IsNullOrEmpty(searchText))
-        {
-            displayFriends = allFriends.Where(f =>
-                (f.Username != null && f.Username.Contains(searchText, StringComparison.OrdinalIgnoreCase)) ||
-                (f.DisplayName != null && f.DisplayName.Contains(searchText, StringComparison.OrdinalIgnoreCase))
-            ).ToList();
-        }
+        // ─── Update Friends List ───
+        var friendItemsToRemove = FriendsListContainer.Children.Where(c => c != NoFriendsLabel).ToList();
+        foreach (var item in friendItemsToRemove) FriendsListContainer.Children.Remove(item);
 
-        var itemsToRemove = FriendsListContainer.Children.Where(c => c != NoFriendsLabel).ToList();
-        foreach (var item in itemsToRemove) FriendsListContainer.Children.Remove(item);
-
-        if (allFriends.Count == 0)
+        if (friends.Count == 0)
         {
-            NoFriendsLabel.Text = "No friends added. Tap 'Add' to begin.";
-            NoFriendsLabel.IsVisible = true;
-        }
-        else if (displayFriends.Count == 0 && !string.IsNullOrEmpty(searchText))
-        {
-            NoFriendsLabel.Text = $"No friends found matching '{searchText}'";
             NoFriendsLabel.IsVisible = true;
         }
         else
         {
             NoFriendsLabel.IsVisible = false;
+            foreach (var friend in friends) FriendsListContainer.Children.Add(CreateFriendView(friend));
         }
 
-        foreach (var friend in displayFriends) FriendsListContainer.Children.Add(CreateFriendView(friend));
+        // ─── Update Groups List ───
+        var groupItemsToRemove = GroupsListContainer.Children.Where(c => c != NoGroupsLabel).ToList();
+        foreach (var item in groupItemsToRemove) GroupsListContainer.Children.Remove(item);
 
-        // Update stats card
-        UpdateStatsCard(allFriends);
+        if (groups.Count == 0)
+        {
+            NoGroupsLabel.IsVisible = true;
+        }
+        else
+        {
+            NoGroupsLabel.IsVisible = false;
+            foreach (var group in groups) GroupsListContainer.Children.Add(CreateFriendView(group));
+        }
+
+        UpdateStatsCard(allItems);
     }
 
-    private void UpdateStatsCard(List<FriendConfig> allFriends)
+    private void UpdateStatsCard(List<FriendConfig> allItems)
     {
-        FriendsStatsCard.IsVisible = allFriends.Count > 0;
-        TotalFriendsLabel.Text = allFriends.Count.ToString();
-        EnabledFriendsLabel.Text = allFriends.Count(f => f.IsEnabled).ToString();
+        FriendsStatsCard.IsVisible = allItems.Count > 0;
+        TotalFriendsLabel.Text = allItems.Count.ToString();
+        EnabledFriendsLabel.Text = allItems.Count(f => f.IsEnabled).ToString();
         var today = DateTime.Now.Date;
-        SentTodayLabel.Text = allFriends.Count(f => f.LastMessageSent.HasValue && f.LastMessageSent.Value.Date == today).ToString();
+        SentTodayLabel.Text = allItems.Count(f => f.LastMessageSent.HasValue && f.LastMessageSent.Value.Date == today).ToString();
     }
 
     private View CreateFriendView(FriendConfig friend)
@@ -141,13 +135,11 @@ public partial class FriendsPage : ContentPage
             StrokeShape = new RoundRectangle { CornerRadius = 16 },
             Stroke = Colors.Transparent,
             Padding = new Thickness(14, 12),
-            Opacity = 0, TranslationY = 10
+            Opacity = 1, TranslationY = 0
         };
         border.SetAppThemeColor(Border.BackgroundColorProperty,
             GetThemeColor("Gray100", "#F3F4F6"),
             GetThemeColor("Gray900", "#111827"));
-        _ = border.FadeTo(1, 300, Easing.CubicOut);
-        _ = border.TranslateTo(0, 0, 300, Easing.CubicOut);
 
         var grid = new Grid
         {
@@ -175,7 +167,7 @@ public partial class FriendsPage : ContentPage
         editButton.Clicked += async (s, e) =>
         {
             var newName = await DisplayPromptAsync("Edit Friend", "Enter new display name:", initialValue: friend.DisplayName ?? friend.Username);
-            if (newName != null) { friend.DisplayName = newName; _settingsService.UpdateFriend(friend); LoadFriendsList(); }
+            if (newName != null) { friend.DisplayName = newName; _settingsService.UpdateFriend(friend); LoadLists(); }
         };
         Grid.SetColumn(editButton, 1); grid.Children.Add(editButton);
 
@@ -184,7 +176,7 @@ public partial class FriendsPage : ContentPage
         deleteButton.Clicked += async (s, e) =>
         {
             var confirm = await DisplayAlert("Remove Friend", $"Remove {displayName} from the list?", "Remove", "Cancel");
-            if (confirm) { _settingsService.RemoveFriend(friend.Id); LoadFriendsList(); }
+            if (confirm) { _settingsService.RemoveFriend(friend.Id); LoadLists(); }
         };
         Grid.SetColumn(deleteButton, 2); grid.Children.Add(deleteButton);
 
@@ -198,100 +190,133 @@ public partial class FriendsPage : ContentPage
         return border;
     }
 
-    private void OnSearchFriendTextChanged(object? sender, TextChangedEventArgs e) => LoadFriendsList();
+    // ─── Mode Switching ───
+
+    private void OnFriendsModeTapped(object? sender, TappedEventArgs e)
+    {
+        if (!_isGroupMode) return;
+        _isGroupMode = false;
+
+        FriendsModeTabBorder.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
+        FriendsModeTabLabel.TextColor = GetThemeColor("White", "#FFFFFF");
+        
+        GroupsModeTabBorder.BackgroundColor = Colors.Transparent;
+        GroupsModeTabLabel.TextColor = GetThemeColor("Gray600", "#5F636A");
+
+        FriendsModeContainer.IsVisible = true;
+        GroupsModeContainer.IsVisible = false;
+    }
+
+    private void OnGroupsModeTapped(object? sender, TappedEventArgs e)
+    {
+        if (_isGroupMode) return;
+        _isGroupMode = true;
+
+        GroupsModeTabBorder.BackgroundColor = GetThemeColor("Primary", "#FE2C55");
+        GroupsModeTabLabel.TextColor = GetThemeColor("White", "#FFFFFF");
+
+        FriendsModeTabBorder.BackgroundColor = Colors.Transparent;
+        FriendsModeTabLabel.TextColor = GetThemeColor("Gray600", "#5F636A");
+
+        FriendsModeContainer.IsVisible = false;
+        GroupsModeContainer.IsVisible = true;
+    }
+
+    // ─── Friends Logic ───
 
     private void OnAddFriendClicked(object? sender, EventArgs e)
     {
         AddFriendPanel.IsVisible = true;
         NewFriendUsernameEntry.Text = string.Empty;
         NewFriendDisplayNameEntry.Text = string.Empty;
-        IsGroupSwitch.IsToggled = false;
-        NewFriendUsernameEntry.Placeholder = "TikTok username (without @)";
-        NewFriendDisplayNameEntry.Placeholder = "Display name (optional)";
         NewFriendUsernameEntry.Focus();
-    }
-
-    private void OnGroupSwitchToggled(object? sender, ToggledEventArgs e)
-    {
-        if (e.Value)
-        {
-            NewFriendUsernameEntry.Placeholder = "Group chat name";
-            NewFriendDisplayNameEntry.Placeholder = "Display name (optional)";
-        }
-        else
-        {
-            NewFriendUsernameEntry.Placeholder = "TikTok username (without @)";
-            NewFriendDisplayNameEntry.Placeholder = "Display name (optional)";
-        }
     }
 
     private void OnCancelAddFriend(object? sender, EventArgs e) => AddFriendPanel.IsVisible = false;
 
     private async void OnSaveFriend(object? sender, EventArgs e)
     {
-        var isGroup = IsGroupSwitch.IsToggled;
         var inputText = NewFriendUsernameEntry.Text?.Trim();
         var displayName = NewFriendDisplayNameEntry.Text?.Trim();
+        var username = inputText?.TrimStart('@');
 
-        if (isGroup)
-        {
-            if (string.IsNullOrEmpty(inputText)) { await DisplayAlert("Error", "Please enter a group chat name", "OK"); return; }
-            var existingFriends = _settingsService.GetFriendsList();
-            if (existingFriends.Any(f => f.IsGroup && f.DisplayName.Equals(inputText, StringComparison.OrdinalIgnoreCase)))
-            { await DisplayAlert("Error", "This group is already in your list", "OK"); return; }
-            var friend = new FriendConfig
-            {
-                Username = string.Empty,
-                DisplayName = displayName ?? inputText,
-                IsGroup = true,
-                IsEnabled = true
-            };
-            // Store the group name in DisplayName for matching
-            if (string.IsNullOrEmpty(displayName)) friend.DisplayName = inputText;
-            _settingsService.AddFriend(friend);
-        }
-        else
-        {
-            var username = inputText?.TrimStart('@');
-            if (string.IsNullOrEmpty(username)) { await DisplayAlert("Error", "Please enter a username", "OK"); return; }
-            var existingFriends = _settingsService.GetFriendsList();
-            if (existingFriends.Any(f => f.Username.Equals(username, StringComparison.OrdinalIgnoreCase)))
-            { await DisplayAlert("Error", "This friend is already in your list", "OK"); return; }
-            var friend = new FriendConfig { Username = username, DisplayName = displayName ?? string.Empty, IsEnabled = true };
-            _settingsService.AddFriend(friend);
-        }
+        if (string.IsNullOrEmpty(username)) { await DisplayAlert("Error", "Please enter a username", "OK"); return; }
+        
+        var existingFriends = _settingsService.GetFriendsList();
+        if (existingFriends.Any(f => !f.IsGroup && f.Username.Equals(username, StringComparison.OrdinalIgnoreCase)))
+        { await DisplayAlert("Error", "This friend is already in your list", "OK"); return; }
+        
+        var friend = new FriendConfig { Username = username, DisplayName = displayName ?? string.Empty, IsEnabled = true, IsGroup = false };
+        _settingsService.AddFriend(friend);
 
         AddFriendPanel.IsVisible = false;
-        LoadFriendsList();
-    }
-
-    private void OnEnableAllClicked(object? sender, EventArgs e)
-    {
-        var friends = _settingsService.GetFriendsList();
-        if (friends.Count == 0) return;
-        foreach (var f in friends) f.IsEnabled = true;
-        _settingsService.SaveFriendsList(friends);
-        LoadFriendsList();
-    }
-
-    private void OnDisableAllClicked(object? sender, EventArgs e)
-    {
-        var friends = _settingsService.GetFriendsList();
-        if (friends.Count == 0) return;
-        foreach (var f in friends) f.IsEnabled = false;
-        _settingsService.SaveFriendsList(friends);
-        LoadFriendsList();
+        LoadLists();
     }
 
     private async void OnDeleteAllFriendsClicked(object? sender, EventArgs e)
     {
-        var friends = _settingsService.GetFriendsList();
-        if (friends.Count == 0) return;
-        bool confirm = await DisplayAlert("Clear All Friends", "Are you sure you want to remove all friends? This cannot be undone.", "Clear All", "Cancel");
+        var all = _settingsService.GetFriendsList();
+        var groupsOnly = all.Where(f => f.IsGroup).ToList();
+        if (all.Count == groupsOnly.Count) return; // No friends to clear
+
+        bool confirm = await DisplayAlert("Clear Friends", "Remove all direct messages? Group chats will not be affected.", "Clear", "Cancel");
         if (confirm)
         {
-            _settingsService.SaveFriendsList(new List<FriendConfig>());
-            LoadFriendsList();
+            _settingsService.SaveFriendsList(groupsOnly);
+            LoadLists();
+        }
+    }
+
+    // ─── Groups Logic ───
+
+    private void OnAddGroupClicked(object? sender, EventArgs e)
+    {
+        AddGroupPanel.IsVisible = true;
+        NewGroupUsernameEntry.Text = string.Empty;
+        NewGroupDisplayNameEntry.Text = string.Empty;
+        NewGroupUsernameEntry.Focus();
+    }
+
+    private void OnCancelAddGroup(object? sender, EventArgs e) => AddGroupPanel.IsVisible = false;
+
+    private async void OnSaveGroup(object? sender, EventArgs e)
+    {
+        var inputText = NewGroupUsernameEntry.Text?.Trim();
+        var displayName = NewGroupDisplayNameEntry.Text?.Trim();
+
+        if (string.IsNullOrEmpty(inputText)) { await DisplayAlert("Error", "Please enter a group chat name", "OK"); return; }
+        
+        var existingFriends = _settingsService.GetFriendsList();
+        if (existingFriends.Any(f => f.IsGroup && f.DisplayName.Equals(inputText, StringComparison.OrdinalIgnoreCase)))
+        { await DisplayAlert("Error", "This group is already in your list", "OK"); return; }
+        
+        var friend = new FriendConfig
+        {
+            Username = string.Empty,
+            DisplayName = displayName ?? inputText,
+            IsGroup = true,
+            IsEnabled = true
+        };
+        // Store the group name in DisplayName for matching
+        if (string.IsNullOrEmpty(displayName)) friend.DisplayName = inputText;
+        
+        _settingsService.AddFriend(friend);
+
+        AddGroupPanel.IsVisible = false;
+        LoadLists();
+    }
+
+    private async void OnDeleteAllGroupsClicked(object? sender, EventArgs e)
+    {
+        var all = _settingsService.GetFriendsList();
+        var friendsOnly = all.Where(f => !f.IsGroup).ToList();
+        if (all.Count == friendsOnly.Count) return; // No groups to clear
+
+        bool confirm = await DisplayAlert("Clear Groups", "Remove all group chats? Direct messages will not be affected.", "Clear", "Cancel");
+        if (confirm)
+        {
+            _settingsService.SaveFriendsList(friendsOnly);
+            LoadLists();
         }
     }
 
@@ -340,7 +365,7 @@ public partial class FriendsPage : ContentPage
                 else { if (string.IsNullOrEmpty(entry.Id)) entry.Id = Guid.NewGuid().ToString(); existing.Add(entry); added++; }
             }
             _settingsService.SaveFriendsList(existing);
-            LoadFriendsList();
+            LoadLists();
             await DisplayAlert("Import Complete", $"Import complete.\n\nAdded: {added}\nUpdated: {updated}\nSkipped: {skipped}", "OK");
         }
         catch (Exception ex) { await DisplayAlert("Import Failed", $"Unexpected error: {ex.Message}", "OK"); }
@@ -360,5 +385,15 @@ public partial class FriendsPage : ContentPage
             await Share.Default.RequestAsync(new ShareFileRequest { Title = "Export Friend List", File = new ShareFile(filePath, "application/json") });
         }
         catch (Exception ex) { await DisplayAlert("Export Failed", $"Could not export: {ex.Message}", "OK"); }
+    }
+
+    private async void OnImportGroupsClicked(object? sender, EventArgs e)
+    {
+        await DisplayAlert("Import Groups", "Group chat import uses the same logic as friends. For now, use the Import button on the Friends tab.", "OK");
+    }
+
+    private async void OnExportGroupsClicked(object? sender, EventArgs e)
+    {
+        await DisplayAlert("Export Groups", "Group chats are exported together with friends. Use the Export button on the Friends tab.", "OK");
     }
 }
