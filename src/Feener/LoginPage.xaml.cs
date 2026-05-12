@@ -26,11 +26,17 @@ public partial class LoginPage : ContentPage
         LoadingOverlay.IsVisible = true;
         
 #if ANDROID
-        // Use a modern Chrome desktop UA. The RandomUa library can generate
-        // ancient browsers (e.g. Firefox 3.6/2010) that cause TikTok to serve
-        // degraded markup, breaking chat header rendering.
+        // Use a mobile UA for the login flow. TikTok's auth API (especially email/password) 
+        // often returns "Internal Server Error" (500) if it detects a desktop UA 
+        // running on an Android device (header mismatch).
+        var mobileUa = TikTokWebViewHelper.GetDefaultUserAgent();
         var desktopUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-        TikTokWebViewHelper.ConfigureWebView(TikTokWebView, desktopUa);
+        
+        TikTokWebViewHelper.ConfigureWebView(TikTokWebView, mobileUa);
+        
+        // We save the desktop UA to the session service so the background 
+        // StreakService (which requires the desktop site for chat automation) 
+        // can use it later.
         _sessionService.SetLoginUserAgent(desktopUa);
 #endif
 
