@@ -284,6 +284,31 @@
                     </Border>
                 </VerticalStackLayout>
 
+                <!-- Live Logs Panel (Feature 1) -->
+                <Border x:Name="LiveLogPanel" IsVisible="False" Style="{StaticResource SectionCard}">
+                    <VerticalStackLayout Spacing="8">
+                        <Grid ColumnDefinitions="*, Auto">
+                            <Label Text="Live Log" Style="{StaticResource SectionLabel}"/>
+                            <Label x:Name="LiveLogCountLabel"
+                                   Grid.Column="1"
+                                   Text="0 lines"
+                                   FontSize="12"
+                                   FontFamily="InterRegular"
+                                   TextColor="{AppThemeBinding Light={StaticResource Gray400}, Dark={StaticResource Gray500}}"
+                                   VerticalOptions="Center"/>
+                        </Grid>
+                        <ScrollView x:Name="LiveLogScrollView"
+                                    HeightRequest="200"
+                                    Orientation="Vertical">
+                            <Label x:Name="LiveLogLabel"
+                                   FontSize="11"
+                                   FontFamily="InterRegular"
+                                   LineBreakMode="WordWrap"
+                                   TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}"/>
+                        </ScrollView>
+                    </VerticalStackLayout>
+                </Border>
+
                 <!-- Footer hint -->
                 <Label Text="Pull down to check for updates"
                        FontFamily="InterRegular"
@@ -332,11 +357,17 @@
                 </VerticalStackLayout>
 
                 <!-- Execution Action -->
-                <Grid x:Name="RunButtonsContainer">
+                <Grid x:Name="RunButtonsContainer" ColumnDefinitions="*, Auto" ColumnSpacing="8">
                     <Button x:Name="MasterRunButton"
                             Text="Run Normal"
                             Style="{StaticResource PrimaryButtonStyle}"
                             Clicked="OnMasterRunClicked"/>
+                    <Button x:Name="RetryFailedButton"
+                            Grid.Column="1"
+                            Text="Retry"
+                            IsVisible="False"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Clicked="OnRetryFailedClicked"/>
                 </Grid>
 
                 <Button x:Name="StopServiceButton"

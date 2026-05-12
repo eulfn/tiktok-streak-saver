@@ -176,6 +176,28 @@ public static class StreakScheduler
     }
 
     /// <summary>
+    /// Run the service targeting only specific failed usernames.
+    /// Returns false if the service is already running.
+    /// </summary>
+    public static bool RunRetryFailed(Context context, List<string> failedUsernames)
+    {
+        if (Services.StreakService.IsRunning)
+            return false;
+
+        var serviceIntent = new Intent(context, typeof(Services.StreakService));
+        serviceIntent.PutExtra("IsBurstMode", false);
+        var json = System.Text.Json.JsonSerializer.Serialize(failedUsernames);
+        serviceIntent.PutExtra("RetryUsernames", json);
+
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+            context.StartForegroundService(serviceIntent);
+        else
+            context.StartService(serviceIntent);
+
+        return true;
+    }
+
+    /// <summary>
     /// Stop the running StreakService gracefully
     /// </summary>
     public static void StopService(Context context)

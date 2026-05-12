@@ -58,6 +58,9 @@ public class StreakService : Service
     private bool _isCancelRequested = false;
     private bool _automationStarted = false;
 
+    // ── Retry-only filter (Feature 3) ──
+    private List<string>? _retryUsernames = null;
+
 
     // ── Run-level mutex: prevents concurrent automation sessions ──
     private static volatile bool _isRunning = false;
@@ -114,6 +117,14 @@ public class StreakService : Service
 
         // Handle Burst Mode flag
         _isBurstMode = intent?.GetBooleanExtra("IsBurstMode", false) ?? false;
+
+        // Handle Retry-only filter (Feature 3)
+        var retryJson = intent?.GetStringExtra("RetryUsernames");
+        if (!string.IsNullOrEmpty(retryJson))
+        {
+            try { _retryUsernames = System.Text.Json.JsonSerializer.Deserialize<List<string>>(retryJson); }
+            catch { _retryUsernames = null; }
+        }
 
         // Ensure we're in foreground mode (in case OnCreate didn't complete it)
         StartForegroundServiceImmediate();
@@ -305,10 +316,26 @@ public class StreakService : Service
                 var today = DateTime.Now.Date;
                 foreach (var friend in allEnabled)
                 {
+                    // Feature 3: If retry filter is active, only include matching usernames
+                    if (_retryUsernames != null && _retryUsernames.Count > 0)
+                    {
+                        var matchKey = friend.IsGroup ? friend.DisplayName : friend.Username;
+                        if (!_retryUsernames.Any(r => r.Equals(matchKey, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+                    }
+
                     if (friend.LastMessageSent.HasValue && friend.LastMessageSent.Value.Date == today)
                     {
-                        _cooldownSkippedCount++;
-                        AppLog("SKIP", $"@{friend.Username}", $"Already messaged today at {friend.LastMessageSent.Value:HH:mm}");
+                        // When retrying, don't skip based on cooldown — we explicitly want to resend
+                        if (_retryUsernames != null && _retryUsernames.Count > 0)
+                        {
+                            _friendsToProcess.Add(friend);
+                        }
+                        else
+                        {
+                            _cooldownSkippedCount++;
+                            AppLog("SKIP", $"@{friend.Username}", $"Already messaged today at {friend.LastMessageSent.Value:HH:mm}");
+                        }
                     }
                     else
                     {
@@ -332,7 +359,8 @@ public class StreakService : Service
                 else if (priority == SettingsService.PriorityGroupsFirst)
                     _friendsToProcess = _friendsToProcess.OrderByDescending(f => f.IsGroup).ToList();
 
-                AppLog("SYSTEM", "-", $"Starting normal automation: {_friendsToProcess.Count} to process, {_cooldownSkippedCount} skipped (already sent today){(priority != SettingsService.PriorityMixed ? $", priority: {priority} first" : "")}");
+                var modeLabel = _retryUsernames != null ? "retry" : "normal";
+                AppLog("SYSTEM", "-", $"Starting {modeLabel} automation: {_friendsToProcess.Count} to process, {_cooldownSkippedCount} skipped (already sent today){(priority != SettingsService.PriorityMixed ? $", priority: {priority} first" : "")}");
 
                 if (_friendsToProcess.Count == 0)
                 {
@@ -597,6 +625,7 @@ public class StreakService : Service
 
                 // Max retries exceeded — record failure and move on
                 friend.FailureCount++;
+                friend.ConsecutiveFailures++;
                 AppLog("FAIL", $"@{username}", error);
 
                 // Auto-disable users not found in chat list when skip is enabled
@@ -680,6 +709,7 @@ public class StreakService : Service
 
             // All simple burst chunks done — record success
             friend.SuccessCount++;
+            friend.ConsecutiveFailures = 0;
             friend.LastMessageSent = DateTime.Now;
             AppLog("SUCCESS", $"@{username}", "Message sequence complete");
 
@@ -812,11 +842,22 @@ public class StreakService : Service
             {
                 var successCount = _runResult?.FriendResults.Count(r => r.Success) ?? 0;
                 var totalSent = _runResult?.FriendResults.Count ?? 0;
-                var skippedCount = totalSent - successCount;
+                var failedCount = totalSent - successCount;
 
                 var cooldownNote = _cooldownSkippedCount > 0
                     ? $", {_cooldownSkippedCount} already sent"
                     : string.Empty;
+
+                // Feature 2: Build failed username list for notification
+                var failedNames = _runResult?.FriendResults
+                    .Where(r => !r.Success)
+                    .Select(r => $"@{r.Username}")
+                    .ToList() ?? new List<string>();
+                var failedSummary = "";
+                if (failedNames.Count > 0 && failedNames.Count <= 5)
+                    failedSummary = $" \u2014 Failed: {string.Join(", ", failedNames)}";
+                else if (failedNames.Count > 5)
+                    failedSummary = $" \u2014 Failed: {string.Join(", ", failedNames.Take(5))}, +{failedNames.Count - 5} more";
 
                 if (success)
                 {
@@ -827,14 +868,14 @@ public class StreakService : Service
                     if (_disabledUsernames.Count > 0)
                         finalText = $"Done : {successCount}/{totalSent} sent, {_disabledUsernames.Count} disabled ({string.Join(", ", _disabledUsernames)}){cooldownNote}";
                     else
-                        finalText = $"Done : {successCount}/{totalSent} sent, {skippedCount} skipped{cooldownNote}";
+                        finalText = $"Done : {successCount}/{totalSent} sent, {failedCount} failed{failedSummary}{cooldownNote}";
                 }
                 else
                 {
                     if (_disabledUsernames.Count > 0)
                         finalText = $"Done : 0/{totalSent} sent, {_disabledUsernames.Count} disabled ({string.Join(", ", _disabledUsernames)}){cooldownNote}";
                     else if (totalSent > 0)
-                        finalText = $"Done : 0/{totalSent} sent, {skippedCount} failed{cooldownNote}";
+                        finalText = $"Done : 0/{totalSent} sent, {failedCount} failed{failedSummary}{cooldownNote}";
                     else
                         finalText = $"Stopped : {message}";
                 }

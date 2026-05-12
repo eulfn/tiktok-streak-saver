@@ -41,6 +41,12 @@ public class FriendConfig
     public int FailureCount { get; set; }
 
     /// <summary>
+    /// Number of consecutive failures (reset to 0 on success).
+    /// Used for streak health indicators on the friends list.
+    /// </summary>
+    public int ConsecutiveFailures { get; set; }
+
+    /// <summary>
     /// If true, this entry is a group chat matched by display name instead of username
     /// </summary>
     public bool IsGroup { get; set; } = false;

@@ -16,6 +16,8 @@ public partial class DashboardPage : ContentPage
     private IDispatcherTimer? _statusTimer;
     private readonly BurstProgressDrawable _burstProgressDrawable;
     private readonly NormalProgressDrawable _normalProgressDrawable;
+    private int _lastLogCount = 0;
+    private bool _wasRunning = false;
 
     public DashboardPage()
     {
@@ -165,6 +167,67 @@ public partial class DashboardPage : ContentPage
         RunButtonsContainer.IsVisible = !isRunning;
         StopServiceButton.IsVisible = isRunning;
         
+        // ─── Live Logs (Feature 1) ───
+#if ANDROID
+        if (isRunning)
+        {
+            LiveLogPanel.IsVisible = true;
+            var logs = Feener.Platforms.Android.Services.StreakService.GetLogs();
+            if (logs.Count != _lastLogCount)
+            {
+                _lastLogCount = logs.Count;
+                // Show last 35 lines max
+                var visibleLogs = logs.Count > 35 ? logs.Skip(logs.Count - 35) : logs;
+                LiveLogLabel.Text = string.Join("\n", visibleLogs);
+                LiveLogCountLabel.Text = $"{logs.Count} lines";
+                // Auto-scroll to bottom
+                _ = LiveLogScrollView.ScrollToAsync(0, double.MaxValue, false);
+            }
+        }
+        else if (_wasRunning && !isRunning)
+        {
+            // Keep logs visible briefly after run ends, then hide
+            // (we keep them visible — user can scroll to read final state)
+        }
+        else if (!isRunning && _lastLogCount == 0)
+        {
+            LiveLogPanel.IsVisible = false;
+        }
+        _wasRunning = isRunning;
+#endif
+
+        // ─── Retry Failed Button (Feature 3) ───
+        if (!isRunning)
+        {
+            var history = _settingsService.GetRunHistory();
+            var latest = history.FirstOrDefault(r => !r.IsBurstMode);
+            bool hasFailures = latest != null
+                && latest.RunTime.Date == DateTime.Today
+                && latest.FriendResults.Any(r => !r.Success);
+            // Only show retry if there are enabled friends that failed
+            if (hasFailures && latest != null)
+            {
+                var failedUsernames = latest.FriendResults
+                    .Where(r => !r.Success)
+                    .Select(r => r.Username)
+                    .ToList();
+                var enabledFriends = _settingsService.GetEnabledFriends();
+                bool anyRetryable = failedUsernames.Any(u =>
+                    enabledFriends.Any(f => f.IsGroup
+                        ? f.DisplayName.Equals(u, StringComparison.OrdinalIgnoreCase)
+                        : f.Username.Equals(u, StringComparison.OrdinalIgnoreCase)));
+                RetryFailedButton.IsVisible = anyRetryable;
+            }
+            else
+            {
+                RetryFailedButton.IsVisible = false;
+            }
+        }
+        else
+        {
+            RetryFailedButton.IsVisible = false;
+        }
+
         // ─── The "Running" State Lock ───
         MessageEditor.IsEnabled = !isRunning;
         MessageEditor.Opacity = isRunning ? 0.6 : 1.0;
@@ -628,6 +691,57 @@ public partial class DashboardPage : ContentPage
 #if ANDROID
         var context = Platform.CurrentActivity ?? Android.App.Application.Context;
         Feener.Platforms.Android.StreakScheduler.StopService(context);
+#endif
+    }
+
+    private async void OnRetryFailedClicked(object? sender, EventArgs e)
+    {
+        var history = _settingsService.GetRunHistory();
+        var latest = history.FirstOrDefault(r => !r.IsBurstMode);
+        if (latest == null) return;
+
+        var failedUsernames = latest.FriendResults
+            .Where(r => !r.Success)
+            .Select(r => r.Username)
+            .ToList();
+
+        // Filter to only enabled friends
+        var enabledFriends = _settingsService.GetEnabledFriends();
+        var retryList = failedUsernames
+            .Where(u => enabledFriends.Any(f => f.IsGroup
+                ? f.DisplayName.Equals(u, StringComparison.OrdinalIgnoreCase)
+                : f.Username.Equals(u, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (retryList.Count == 0)
+        {
+            await DisplayAlert("No Retries", "All failed friends have been disabled or removed.", "OK");
+            return;
+        }
+
+        var confirm = await DisplayAlert("Retry Failed",
+            $"Retry sending to {retryList.Count} failed friend{(retryList.Count != 1 ? "s" : "")}?\n\n{string.Join(", ", retryList.Select(u => $"@{u}"))}",
+            "Retry", "Cancel");
+        if (!confirm) return;
+
+#if ANDROID
+        bool permissionGranted = await RequestNotificationPermission();
+        if (!permissionGranted) return;
+
+        var context = Platform.CurrentActivity ?? Android.App.Application.Context;
+        bool started = Feener.Platforms.Android.StreakScheduler.RunRetryFailed(context, retryList);
+        if (started)
+        {
+            _lastLogCount = 0;
+            await DisplayAlert("Retry Started", $"Retrying {retryList.Count} failed friend{(retryList.Count != 1 ? "s" : "")}.", "OK");
+            UpdateStatus();
+        }
+        else
+        {
+            await DisplayAlert("Already Running", "A process is already running. Please wait for it to finish.", "OK");
+        }
+#else
+        await DisplayAlert("Info", "This feature is only available on Android", "OK");
 #endif
     }
 

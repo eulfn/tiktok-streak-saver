@@ -145,6 +145,7 @@ public partial class FriendsPage : ContentPage
         {
             ColumnDefinitions = new ColumnDefinitionCollection
             {
+                new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = GridLength.Star },
                 new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = GridLength.Auto },
@@ -153,13 +154,37 @@ public partial class FriendsPage : ContentPage
             ColumnSpacing = 8
         };
 
+        // Health indicator dot (Feature 4)
+        Color healthColor;
+        if (friend.ConsecutiveFailures == 0)
+            healthColor = Color.FromArgb("#22C55E"); // green
+        else if (friend.ConsecutiveFailures <= 2)
+            healthColor = Color.FromArgb("#EAB308"); // yellow
+        else
+            healthColor = Color.FromArgb("#EF4444"); // red
+
+        var healthDot = new BoxView
+        {
+            WidthRequest = 8,
+            HeightRequest = 8,
+            CornerRadius = 4,
+            Color = healthColor,
+            VerticalOptions = LayoutOptions.Center,
+            HorizontalOptions = LayoutOptions.Center
+        };
+        Grid.SetColumn(healthDot, 0);
+        grid.Children.Add(healthDot);
+
         var infoStack = new VerticalStackLayout { Spacing = 3 };
         var displayName = string.IsNullOrEmpty(friend.DisplayName) ? friend.Username : friend.DisplayName;
         infoStack.Children.Add(new Label { Text = displayName, FontSize = 15, FontFamily = "InterSemiBold" });
         var subtitleText = friend.IsGroup ? "Group" : $"@{friend.Username}";
         infoStack.Children.Add(new Label { Text = subtitleText, FontSize = 13, TextColor = GetThemeColor("Gray400", "#8B8F96") });
         if (friend.LastMessageSent.HasValue)
-            infoStack.Children.Add(new Label { Text = $"Last sent: {friend.LastMessageSent.Value:MMM dd}", FontSize = 12, TextColor = GetThemeColor("Gray400", "#8B8F96") });
+            infoStack.Children.Add(new Label { Text = $"Last sent: {friend.LastMessageSent.Value:MMM dd, HH:mm}", FontSize = 12, TextColor = GetThemeColor("Gray400", "#8B8F96") });
+        else
+            infoStack.Children.Add(new Label { Text = "Never sent", FontSize = 12, TextColor = GetThemeColor("Gray400", "#8B8F96") });
+        Grid.SetColumn(infoStack, 1);
         grid.Children.Add(infoStack);
 
         var editButton = new Button { Text = "Edit", BackgroundColor = Colors.Transparent, FontSize = 12, Padding = new Thickness(8), HeightRequest = 44, VerticalOptions = LayoutOptions.Center, IsEnabled = !_lastIsRunning, Opacity = _lastIsRunning ? 0.6 : 1.0 };
@@ -186,7 +211,7 @@ public partial class FriendsPage : ContentPage
                 if (newGroupName != null) { friend.DisplayName = newGroupName; _settingsService.UpdateFriend(friend); LoadLists(); }
             }
         };
-        Grid.SetColumn(editButton, 1); grid.Children.Add(editButton);
+        Grid.SetColumn(editButton, 2); grid.Children.Add(editButton);
 
         var deleteButton = new Button { Text = "Delete", BackgroundColor = Colors.Transparent, FontSize = 12, Padding = new Thickness(8), HeightRequest = 44, VerticalOptions = LayoutOptions.Center, IsEnabled = !_lastIsRunning, Opacity = _lastIsRunning ? 0.6 : 1.0 };
         deleteButton.TextColor = GetThemeColor("DeleteColor", "#EE1D52");
@@ -195,13 +220,13 @@ public partial class FriendsPage : ContentPage
             var confirm = await DisplayAlert("Remove Friend", $"Remove {displayName} from the list?", "Remove", "Cancel");
             if (confirm) { _settingsService.RemoveFriend(friend.Id); LoadLists(); }
         };
-        Grid.SetColumn(deleteButton, 2); grid.Children.Add(deleteButton);
+        Grid.SetColumn(deleteButton, 3); grid.Children.Add(deleteButton);
 
         var toggleSwitch = new Switch { IsToggled = friend.IsEnabled, VerticalOptions = LayoutOptions.Center, IsEnabled = !_lastIsRunning, Opacity = _lastIsRunning ? 0.6 : 1.0 };
         toggleSwitch.SetAppThemeColor(Switch.ThumbColorProperty, GetThemeColor("White"), GetThemeColor("White"));
         toggleSwitch.SetAppThemeColor(Switch.OnColorProperty, GetThemeColor("Primary", "#FE2C55"), GetThemeColor("Primary", "#FE2C55"));
         toggleSwitch.Toggled += (s, e) => { friend.IsEnabled = e.Value; _settingsService.UpdateFriend(friend); };
-        Grid.SetColumn(toggleSwitch, 3); grid.Children.Add(toggleSwitch);
+        Grid.SetColumn(toggleSwitch, 4); grid.Children.Add(toggleSwitch);
 
         border.Content = grid;
         return border;
