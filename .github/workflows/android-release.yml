@@ -55,32 +55,10 @@ jobs:
       env:
         SIGNING_PASSWORD_CHECK: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
 
-    - name: System Info
-      run: |
-        Write-Host "=== Runner Environment ==="
-        Write-Host "OS: $([System.Environment]::OSVersion)"
-        Write-Host "Machine: $env:COMPUTERNAME"
-        Write-Host "CPU count: $([System.Environment]::ProcessorCount)"
-        Write-Host "RAM: $([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)) GB"
-        Write-Host "Disk free: $([math]::Round((Get-PSDrive C).Free / 1GB, 2)) GB"
-        Write-Host "=== PATH ==="
-        $env:PATH -split ';' | ForEach-Object { Write-Host "  $_" }
-      shell: pwsh
-
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: .NET Info
-      run: |
-        Write-Host "=== .NET SDK ==="
-        dotnet --info
-        Write-Host "=== Installed SDKs ==="
-        dotnet --list-sdks
-        Write-Host "=== Installed Runtimes ==="
-        dotnet --list-runtimes
-      shell: pwsh
 
     - name: Setup Java JDK
       uses: actions/setup-java@v4
@@ -88,14 +66,7 @@ jobs:
         distribution: 'microsoft'
         java-version: '17'
 
-    - name: Java Info
-      run: |
-        Write-Host "=== Java Version ==="
-        java -version
-        Write-Host "=== JAVA_HOME ==="
-        Write-Host $env:JAVA_HOME
-      shell: pwsh
-
+    # Cache NuGet packages to avoid re-downloading on every build
     - name: Cache NuGet packages
       uses: actions/cache@v4
       with:
@@ -105,15 +76,10 @@ jobs:
           nuget-${{ runner.os }}-
 
     - name: Install MAUI workload
-      run: |
-        dotnet workload install maui-android --verbosity diag
-        Write-Host "=== Installed Workloads ==="
-        dotnet workload list
-      shell: pwsh
+      run: dotnet workload install maui-android
 
     - name: Restore dependencies
-      run: dotnet restore ${{ env.PROJECT_PATH }} --verbosity detailed
-      shell: pwsh
+      run: dotnet restore ${{ env.PROJECT_PATH }}
 
     - name: Get version from tag
       id: get_version
@@ -132,40 +98,15 @@ jobs:
         $parts = $ver -split '\.'
         $vc = [int]$parts[0] * 10000 + [int]$parts[1] * 100 + [int]$parts[2]
         Write-Host "Building with ApplicationVersion=$vc ApplicationDisplayVersion=$ver"
-        dotnet publish ${{ env.PROJECT_PATH }} `
-          -f net9.0-android `
-          -c Release `
-          -o ./artifacts `
-          -p:ApplicationVersion=$vc `
-          -p:ApplicationDisplayVersion=$ver `
-          -v detailed `
-          -p:AndroidBuildApplicationPackage=true `
-          -bl:./artifacts/build.binlog
+        dotnet publish ${{ env.PROJECT_PATH }} -f net9.0-android -c Release -o ./artifacts -p:ApplicationVersion=$vc -p:ApplicationDisplayVersion=$ver
       shell: pwsh
       env:
         ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
 
-    - name: Upload Build Log (binlog)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-binlog
-        path: ./artifacts/build.binlog
-        retention-days: 7
-
-    - name: List artifacts
-      if: always()
-      run: |
-        Write-Host "=== Artifacts directory ==="
-        Get-ChildItem -Path ./artifacts -Recurse | ForEach-Object {
-          $size = if ($_.PSIsContainer) { "[DIR]" } else { "$([math]::Round($_.Length / 1KB, 1)) KB" }
-          Write-Host "$size  $($_.FullName)"
-        }
-      shell: pwsh
-
     - name: Rename APK
       run: |
         $newName = "Feener-v${{ steps.get_version.outputs.VERSION }}.apk"
+        # Prefer explicitly signed variant if MAUI produced both signed and unsigned
         $apk = Get-ChildItem -Path ./artifacts -Filter "*-Signed.apk" | Select-Object -First 1
         if (-not $apk) {
           $apk = Get-ChildItem -Path ./artifacts -Filter "*.apk" | Select-Object -First 1
@@ -174,15 +115,11 @@ jobs:
           Rename-Item -Path $apk.FullName -NewName $newName
           echo "APK_NAME=$newName" >> $env:GITHUB_OUTPUT
           echo "APK_PATH=./artifacts/$newName" >> $env:GITHUB_OUTPUT
+          # Delete all other APKs so only Feener-vX.X.X.apk gets uploaded
           Get-ChildItem -Path ./artifacts -Filter "*.apk" |
             Where-Object { $_.Name -ne $newName } |
             Remove-Item -Force
           Write-Host "Published APK: $newName"
-          $apkSize = [math]::Round((Get-Item "./artifacts/$newName").Length / 1MB, 2)
-          Write-Host "APK size: $apkSize MB"
-        } else {
-          Write-Error "No APK found in ./artifacts!"
-          exit 1
         }
       shell: pwsh
       id: rename_apk
